@@ -14,7 +14,7 @@ import app.models  # noqa: F401
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # En local creamos las tablas al vuelo para iterar rápido.
-    # En producción esto lo maneja Alembic (Fase 2).
+    # En producción esto lo maneja Alembic (ver backend/alembic).
     if settings.ENVIRONMENT == "local":
         Base.metadata.create_all(bind=engine)
     yield

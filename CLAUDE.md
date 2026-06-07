@@ -67,25 +67,39 @@ infra/
 docker-compose.yml   local: postgres + api
 ```
 
-## Estado actual — Fase 1 COMPLETA ✅
+## Estado actual — Fase 2 COMPLETA ✅
 
-- Core del backend, los **10 modelos ORM** con relaciones, app factory, Docker y
-  docker-compose. Verificado: 10 tablas se generan, relaciones válidas, app carga.
-- Repo git inicializado.
+- **Fase 1**: core del backend, los **10 modelos ORM** con relaciones, app factory,
+  Docker y docker-compose. Repo git inicializado.
+- **Fase 2**: backend de dominio completo. Verificado con **29 tests pytest** (verdes)
+  y **ruff** limpio.
+  - **Schemas Pydantic v2** (`app/schemas/`): un módulo por dominio.
+  - **Routers** (`app/api/routes/`), cableados en `app/api/router.py` bajo `/api/v1`:
+    `auth` (register + login JWT/OAuth2), `usuarios` (me + perfil público),
+    `categorias` (+ subcategorías), `servicios` (búsqueda con filtros + CRUD del dueño),
+    `calendarios`, `eventos` (slots, validación de rango horario, dueño),
+    `contrataciones` (rol cliente/profesional), `resenas` (recalcula
+    `calificacion_promedio` del profesional), `metodos-de-pago`, `direcciones`.
+    Total: **41 rutas**.
+  - **Alembic** configurado (`backend/alembic.ini`, `alembic/env.py` que lee
+    `settings.DATABASE_URL`) + migración inicial que crea las 10 tablas.
+  - **Seed** idempotente de categorías: `python -m app.db.seed` (10 cats + 44 subcats).
+  - **Tests**: `tests/conftest.py` usa SQLite in-memory (StaticPool) y override de
+    `get_db`; setea `ENVIRONMENT=test` antes de importar la app para que el lifespan
+    no toque Postgres.
 
 ### Roadmap
 
 - [x] **Fase 1 — Fundación**: estructura, core, modelos ORM, Docker local
-- [ ] **Fase 2 — Backend dominio**: schemas Pydantic + routers (auth, users,
-      categories, services, calendars, events, contracts, reviews) + Alembic +
+- [x] **Fase 2 — Backend dominio**: schemas Pydantic + routers + Alembic +
       seed de categorías + tests pytest
 - [ ] **Fase 3 — Frontend**: React+Vite+Tailwind, auth, búsqueda de servicios,
       agenda, contrataciones
 - [ ] **Fase 4 — Cloud Run**: build → Artifact Registry → Cloud Run + Cloud SQL + CI/CD
 - [ ] **Fase 5 — GKE (estudio)**: manifests Deployment/Service/Ingress, HPA
 
-**Próximo paso sugerido:** Fase 2, empezando por el vertical **auth + users**
-(registro + login JWT), que desbloquea todo lo demás y deja un endpoint real en `/docs`.
+**Próximo paso sugerido:** Fase 3, el **frontend** React+Vite+Tailwind, consumiendo
+los endpoints de `/api/v1` (empezando por auth + búsqueda de servicios).
 
 ## Cómo correr
 
@@ -100,6 +114,17 @@ python -m venv .venv && .venv\Scripts\activate
 pip install -r requirements-dev.txt
 # crear .env desde .env.example, apuntando DATABASE_URL a un Postgres local
 uvicorn app.main:app --reload
+
+# Migraciones (producción / Postgres real):
+alembic upgrade head            # aplica el esquema
+alembic revision --autogenerate -m "mensaje"   # nueva migración
+
+# Seed de categorías (idempotente):
+python -m app.db.seed
+
+# Tests (usan SQLite in-memory, no requieren Postgres):
+pytest
+ruff check app tests alembic
 ```
 
 ## Convenciones y aprendizajes (importante)
