@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Producción · el circuito real · chambapp</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="inner">
+      <a class="brand" href="index.html">chamb<span>app</span> · estudio</a>
+      <nav>
+        <a href="index.html">Inicio</a>
+        <a href="fase-1.html">1 · Fundación</a>
+        <a href="fase-2.html">2 · Backend</a>
+        <a href="fase-3.html">3 · Frontend</a>
+        <a href="fase-4.html">4 · Cloud Run</a>
+        <a href="fase-5.html">5 · Kubernetes</a>
+        <a href="produccion.html" class="active">🚀 Producción</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="toc">
+      <h4>El circuito real</h4>
+      <a href="#intro">Lo que pusimos en vivo</a>
+      <a href="#arq">1. La arquitectura elegida</a>
+      <a href="#decisiones">2. Decisiones (y por qué)</a>
+      <a href="#supabase">3. La base: Supabase</a>
+      <a href="#backend">4. Backend a Cloud Run</a>
+      <a href="#frontend">5. Frontend a Firebase</a>
+      <a href="#bugs">6. Los problemas reales</a>
+      <a href="#bug-cors" class="sub">Bug 1: CORS / pydantic</a>
+      <a href="#bug-pass" class="sub">Bug 2: auth de la DB</a>
+      <a href="#bug-comma" class="sub">Bug 3: coma en gcloud</a>
+      <a href="#bug-seed" class="sub">Bug 4: seed transitorio</a>
+      <a href="#request">7. Una request en prod</a>
+      <a href="#operar">8. Operar y redeploy</a>
+      <a href="#costos">9. Costos y gotchas</a>
+      <a href="#repaso">Repaso de entrevista</a>
+    </aside>
+
+    <main>
+      <h1>Producción — el circuito real</h1>
+      <p class="subtitle">Cómo pusimos chambapp en vivo y accesible, de punta a punta:
+        arquitectura, comandos reales, los bugs que aparecieron y cómo se resolvieron.</p>
+
+      <section id="intro">
+        <div class="lead">
+          Esta página documenta el despliegue <strong>real</strong> (no teórico) que dejó la
+          app online y gratis: <strong>frontend en Firebase Hosting</strong>,
+          <strong>backend en Cloud Run</strong> y <strong>base en Supabase</strong>. Incluye
+          los cuatro problemas que aparecieron en el camino y cómo se diagnosticaron — que es
+          lo más útil para aprender de verdad y para una entrevista.
+        </div>
+        <table>
+          <tr><th>Pieza</th><th>Dónde quedó</th></tr>
+          <tr><td>App (frontend)</td><td><code>https://chambapp-a0472.web.app</code> (Firebase Hosting)</td></tr>
+          <tr><td>API (backend)</td><td><code>https://chambapp-api-...run.app</code> (Cloud Run, región us-central1)</td></tr>
+          <tr><td>Base de datos</td><td>Supabase Postgres (región us-east-1), vía Session pooler</td></tr>
+          <tr><td>Imágenes Docker</td><td>Artifact Registry (<code>chambapp</code>)</td></tr>
+          <tr><td>Secretos</td><td>Secret Manager (<code>DATABASE_URL</code>, <code>SECRET_KEY</code>)</td></tr>
+          <tr><td>Proyecto GCP/Firebase</td><td><code>chambapp-a0472</code></td></tr>
+        </table>
+        <div class="box ojo">
+          <p><span class="t">Ojo: difiere de la Fase 4 "de manual".</span> La guía de la Fase 4
+          describe el patrón clásico (frontend y backend en Cloud Run + Cloud SQL). Acá optamos
+          por una variante <strong>$0 real</strong>: Firebase Hosting para el front y Supabase
+          para la DB, porque Cloud SQL no tiene free tier. Saber elegir la variante barata
+          también es ingeniería.</p>
+        </div>
+      </section>
+
+      <section id="arq">
+        <h2>1. La arquitectura elegida</h2>
+        <div class="flow">  Navegador
+     │
+     ▼  https://chambapp-a0472.web.app
+  ┌─────────────────────────┐
+  │   Firebase Hosting      │   sirve la SPA (HTML/JS/CSS) por CDN
+  │   (rewrites)            │
+  └───────────┬─────────────┘
+              │  /api/**  → reescritura a Cloud Run (MISMO dominio)
+              ▼
+  ┌─────────────────────────┐
+  │   Cloud Run             │   FastAPI (escala a cero)
+  │   chambapp-api          │
+  └───────────┬─────────────┘
+              │  Session pooler (IPv4) + SSL
+              ▼
+  ┌─────────────────────────┐
+  │   Supabase (Postgres)   │   datos
+  └─────────────────────────┘</div>
+        <p>La clave del diseño: <strong>todo bajo el mismo dominio</strong>. Firebase Hosting
+          sirve la SPA y, cuando el navegador pide <code>/api/**</code>, lo
+          <strong>reescribe</strong> hacia el servicio de Cloud Run. Para el browser, front y
+          API viven en <code>chambapp-a0472.web.app</code> ⇒ <strong>no hay CORS</strong>.</p>
+        <div class="code">
+          <div class="filename">firebase.json — el corazón de la integración</div>
+<pre><code>{
+  "hosting": {
+    "public": "frontend/dist",
+    "rewrites": [
+      { "source": "/api/**",
+        "run": { "serviceId": "chambapp-api", "region": "us-central1" } },
+      { "source": "**", "destination": "/index.html" }
+    ]
+  }
+}</code></pre>
+        </div>
+        <ul>
+          <li><strong>Primera regla</strong>: <code>/api/**</code> va a Cloud Run (Firebase
+            preserva el path completo, así <code>/api/v1/auth/login</code> llega igual al backend).</li>
+          <li><strong>Segunda regla</strong>: cualquier otra ruta cae en <code>index.html</code>
+            (fallback de la SPA, para que react-router maneje el ruteo en el cliente).</li>
+          <li><strong>Consecuencia</strong>: el front se buildea con
+            <code>VITE_API_URL=/api/v1</code> (relativo). Cero configuración de CORS, cero URLs
+            cruzadas.</li>
+        </ul>
+      </section>
+
+      <section id="decisiones">
+        <h2>2. Decisiones (y por qué)</h2>
+        <table>
+          <tr><th>Decisión</th><th>Por qué</th></tr>
+          <tr>
+            <td>Frontend en <strong>Firebase Hosting</strong> (no Cloud Run)</td>
+            <td>Es estático: CDN global gratis, deploy de un comando, y el <em>rewrite</em> a
+                Cloud Run elimina el CORS. Más simple que servir nginx en otro Cloud Run.</td>
+          </tr>
+          <tr>
+            <td>DB en <strong>Supabase</strong> (no Cloud SQL)</td>
+            <td>Cloud SQL no tiene free tier (~USD 8-10/mes). Supabase da Postgres gratis. El
+                objetivo era <strong>$0</strong>.</td>
+          </tr>
+          <tr>
+            <td><strong>Session pooler</strong> de Supabase (no conexión directa)</td>
+            <td>La conexión directa de Supabase es <strong>IPv6</strong>; Cloud Run hace egress
+                <strong>IPv4</strong>. El Session pooler (Supavisor) es IPv4 y se comporta como
+                un Postgres normal (a diferencia del Transaction pooler, que rompe con SQLAlchemy).</td>
+          </tr>
+          <tr>
+            <td>Secretos en <strong>Secret Manager</strong></td>
+            <td>La <code>DATABASE_URL</code> lleva la contraseña del pooler; nunca en el repo ni
+                en variables de entorno planas.</td>
+          </tr>
+          <tr>
+            <td>Migraciones en el <strong>entrypoint</strong></td>
+            <td>Al arrancar, <code>alembic upgrade head</code> crea/actualiza el esquema en
+                Supabase antes de servir.</td>
+          </tr>
+        </table>
+        <div class="box entrevista">
+          <p><span class="t">«¿Por qué no Cloud SQL?»</span><br>
+          Porque el requisito era costo cero y Cloud SQL no tiene free tier. Supabase ofrece
+          Postgres gratis y, usando el Session pooler (IPv4), se integra sin problema con Cloud
+          Run. Es una decisión de costo/beneficio, no técnica: Cloud SQL sería la opción si
+          hubiera presupuesto y se quisiera todo dentro de GCP.</p>
+        </div>
+      </section>
+
+      <section id="supabase">
+        <h2>3. La base: Supabase</h2>
+        <p>Pasos en el dashboard de Supabase:</p>
+        <ol>
+          <li>Crear proyecto (nombre, password de DB, región — elegimos <em>us-east-1</em>).</li>
+          <li>Desmarcar "Enable Data API" (no usamos la API REST automática de Supabase; entramos
+            directo al Postgres desde nuestra FastAPI).</li>
+          <li><strong>Connect → Session pooler</strong> para obtener el connection string IPv4.</li>
+        </ol>
+        <div class="code">
+          <div class="filename">forma del connection string (Session pooler)</div>
+<pre><code>postgresql://postgres.&lt;ref&gt;:&lt;password&gt;@aws-1-us-east-1.pooler.supabase.com:5432/postgres
+       └ usuario con el ref ┘                └ host del pooler (IPv4) ┘</code></pre>
+        </div>
+        <p>Para nuestra app lo transformamos al formato de SQLAlchemy + psycopg2, agregando SSL:</p>
+        <div class="code">
+          <div class="filename">DATABASE_URL final (va a Secret Manager)</div>
+<pre><code>postgresql+psycopg2://postgres.&lt;ref&gt;:&lt;password&gt;@aws-1-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require</code></pre>
+        </div>
+        <div class="box tip">
+          <p><span class="t">Detalle del usuario del pooler.</span> El usuario es
+          <code>postgres.&lt;ref&gt;</code> (con el ref del proyecto). Supavisor usa ese prefijo
+          para saber a qué proyecto enrutar, y del lado del servidor autentica como
+          <code>postgres</code>. Por eso un error "auth failed for user postgres" no significa
+          que el usuario esté mal escrito.</p>
+        </div>
+      </section>
+
+      <section id="backend">
+        <h2>4. Backend a Cloud Run</h2>
+        <p>El recorrido completo, con los comandos reales (sin Docker local: build con Cloud Build):</p>
+        <div class="code">
+          <div class="filename">4.1 — Proyecto, APIs y repo de imágenes</div>
+<pre><code>gcloud config set project chambapp-a0472
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
+  artifactregistry.googleapis.com secretmanager.googleapis.com
+gcloud artifacts repositories create chambapp \
+  --repository-format=docker --location=us-central1</code></pre>
+        </div>
+        <div class="code">
+          <div class="filename">4.2 — Secretos en Secret Manager</div>
+<pre><code>printf '%s' 'postgresql+psycopg2://...pooler.supabase.com:5432/postgres?sslmode=require' \
+  | gcloud secrets create DATABASE_URL --data-file=-
+openssl rand -hex 32 | gcloud secrets create SECRET_KEY --data-file=-
+
+# permiso de lectura a la service account de runtime de Cloud Run:
+gcloud projects add-iam-policy-binding chambapp-a0472 \
+  --member="serviceAccount:&lt;PROJECT_NUMBER&gt;-compute@developer.gserviceaccount.com" \
+  --role=roles/secretmanager.secretAccessor</code></pre>
+        </div>
+        <div class="code">
+          <div class="filename">4.3 — Build de la imagen (Cloud Build) y deploy</div>
+<pre><code>gcloud builds submit backend \
+  --tag us-central1-docker.pkg.dev/chambapp-a0472/chambapp/chambapp-api:TAG
+
+gcloud run deploy chambapp-api \
+  --image=us-central1-docker.pkg.dev/chambapp-a0472/chambapp/chambapp-api:TAG \
+  --region=us-central1 --allow-unauthenticated \
+  --set-env-vars="^##^ENVIRONMENT=production##SEED_ON_START=false##BACKEND_CORS_ORIGINS=https://chambapp-a0472.web.app,https://chambapp-a0472.firebaseapp.com" \
+  --set-secrets=DATABASE_URL=DATABASE_URL:latest,SECRET_KEY=SECRET_KEY:latest</code></pre>
+        </div>
+        <ul>
+          <li><strong><code>gcloud builds submit</code></strong>: sube la carpeta
+            <code>backend/</code> y la buildea en la nube (no hace falta Docker local).</li>
+          <li><strong><code>--allow-unauthenticated</code></strong>: el servicio es público (la
+            autenticación la maneja la app con JWT, no Cloud Run).</li>
+          <li><strong><code>--set-secrets</code></strong>: monta los secretos como variables de
+            entorno en runtime. La imagen no contiene ningún secreto.</li>
+          <li>Al arrancar, el <code>entrypoint</code> corre <code>alembic upgrade head</code> y
+            crea las tablas en Supabase.</li>
+        </ul>
+        <div class="box tip">
+          <p><span class="t">Verificación rápida del backend:</span></p>
+<pre style="margin:8px 0 0;background:#0f172a;color:#e2e8f0;padding:10px;border-radius:8px;font-size:0.8rem;overflow-x:auto"><code>curl https://chambapp-api-...run.app/health            # {"status":"healthy"}
+curl https://chambapp-api-...run.app/api/v1/categorias # las 10 categorías</code></pre>
+        </div>
+      </section>
+
+      <section id="frontend">
+        <h2>5. Frontend a Firebase Hosting</h2>
+        <div class="code">
+          <div class="filename">5.1 — Build + deploy</div>
+<pre><code># el front se buildea con VITE_API_URL=/api/v1 (default) → mismo origen
+cd frontend &amp;&amp; npm run build &amp;&amp; cd ..
+firebase deploy --only hosting --project chambapp-a0472</code></pre>
+        </div>
+        <ul>
+          <li>Firebase sube el contenido de <code>frontend/dist</code> a su CDN.</li>
+          <li>Aplica las <code>rewrites</code> de <code>firebase.json</code>: la integración con
+            Cloud Run queda activa al instante.</li>
+          <li>Requiere que el proyecto Firebase esté en plan <strong>Blaze</strong> (billing
+            linkeado) — es lo que habilita el rewrite a Cloud Run. Igual sigue dentro del free tier.</li>
+        </ul>
+        <div class="code">
+          <div class="filename">5.2 — Verificación end-to-end (por el dominio del front)</div>
+<pre><code>curl https://chambapp-a0472.web.app/                    # 200, HTML de la SPA
+curl https://chambapp-a0472.web.app/api/v1/categorias   # 10 → ¡el rewrite funciona!
+curl -X POST https://chambapp-a0472.web.app/api/v1/auth/login \
+  -d 'username=...&amp;password=...'                         # devuelve un JWT</code></pre>
+        </div>
+        <p>Que <code>/api/v1/categorias</code> responda <em>desde el dominio de Firebase</em>
+          prueba que el rewrite a Cloud Run está enrutando bien y que es todo mismo origen.</p>
+      </section>
+
+      <section id="bugs">
+        <h2>6. Los problemas reales (y cómo se resolvieron)</h2>
+        <p>El deploy no salió de una. Aparecieron cuatro problemas — esta es la parte más
+          formativa, porque muestra el <strong>método de diagnóstico</strong>.</p>
+
+        <h3 id="bug-cors">Bug 1 — El contenedor crasheaba al arrancar (CORS / pydantic-settings)</h3>
+        <p><strong>Síntoma:</strong> Cloud Run fallaba con "container failed to start and listen
+          on PORT". <strong>Diagnóstico:</strong> leer los logs.</p>
+        <div class="code">
+          <div class="filename">cómo se leyeron los logs del fallo</div>
+<pre><code>gcloud logging read \
+  'resource.type="cloud_run_revision" AND resource.labels.service_name="chambapp-api"' \
+  --limit=40 --freshness=10m --format='value(textPayload)'</code></pre>
+        </div>
+        <p>El traceback mostraba que <code>pydantic-settings</code> reventaba al construir
+          <code>Settings()</code>. <strong>Causa:</strong> el campo
+          <code>BACKEND_CORS_ORIGINS</code> es <code>list[str]</code>; cuando se pasa por una
+          variable de entorno, pydantic-settings intenta <strong>parsearla como JSON</strong>, y
+          nuestro valor (CSV: <code>"a,b"</code>) no es JSON válido. Nunca se había notado porque
+          en local/tests se usaba el default (una lista de Python).</p>
+        <div class="code">
+          <div class="filename">el fix en app/core/config.py</div>
+<pre><code><span class="kw">from</span> typing <span class="kw">import</span> Annotated
+<span class="kw">from</span> pydantic_settings <span class="kw">import</span> BaseSettings, NoDecode, SettingsConfigDict
+
+<span class="cm"># NoDecode: que NO intente JSON; lo separa nuestro validador (mode="before")</span>
+BACKEND_CORS_ORIGINS: Annotated[<span class="kw">list</span>[<span class="kw">str</span>], NoDecode] = [<span class="st">"http://localhost:5173"</span>]</code></pre>
+        </div>
+        <div class="box concepto">
+          <p><span class="t">Lección.</span> Un bug latente sólo aparece cuando cambia el
+          <em>entorno</em> (acá: setear la var por primera vez en prod). Por eso "funciona en mi
+          máquina" no alcanza: hay que probar la config de producción.</p>
+        </div>
+
+        <h3 id="bug-pass">Bug 2 — "password authentication failed for user postgres"</h3>
+        <p><strong>Síntoma:</strong> tras arreglar el bug 1, el contenedor seguía sin arrancar;
+          los logs mostraban que <code>alembic</code> no podía conectar a Supabase: auth fallida.
+          <strong>Causa:</strong> la contraseña que teníamos no era la real de la base.
+          <strong>Fix:</strong> resetear la password en Supabase (Settings → Database → Reset
+          database password) y actualizar el secreto con una <strong>nueva versión</strong>:</p>
+        <div class="code">
+          <div class="filename">actualizar el secreto (nueva versión)</div>
+<pre><code>printf '%s' 'postgresql+psycopg2://postgres.&lt;ref&gt;:&lt;NUEVA_PASS&gt;@...pooler...:5432/postgres?sslmode=require' \
+  | gcloud secrets versions add DATABASE_URL --data-file=-
+<span class="cm"># como el deploy usa DATABASE_URL:latest, el próximo arranque toma la nueva</span></code></pre>
+        </div>
+        <div class="box tip">
+          <p><span class="t">Truco de diagnóstico.</span> Para descartar que el problema fuera del
+          lado de la app, probamos la conexión <em>directo</em> con psycopg2 desde la consola
+          (con la password nueva). 5 de 5 conexiones OK ⇒ la credencial era correcta y el
+          problema previo era la password vieja.</p>
+        </div>
+
+        <h3 id="bug-comma">Bug 3 — La coma de gcloud</h3>
+        <p><strong>Síntoma:</strong> <code>gcloud run deploy</code> tiraba un error de parseo de
+          flags. <strong>Causa:</strong> <code>--set-env-vars</code> usa la coma para separar
+          pares <code>clave=valor</code>, pero nuestro <code>BACKEND_CORS_ORIGINS</code>
+          <em>contiene</em> una coma (dos orígenes). <strong>Fix:</strong> el delimitador
+          alternativo de gcloud, anteponiendo <code>^##^</code> para usar <code>##</code> como
+          separador:</p>
+        <div class="code">
+          <div class="filename">delimitador alternativo</div>
+<pre><code>--set-env-vars="^##^ENVIRONMENT=production##BACKEND_CORS_ORIGINS=https://a.web.app,https://b.firebaseapp.com"
+<span class="cm">#               └ usa ## como separador, así la coma queda dentro del valor</span></code></pre>
+        </div>
+
+        <h3 id="bug-seed">Bug 4 — El seed falló (glitch transitorio del pooler)</h3>
+        <p><strong>Síntoma:</strong> las migraciones corrieron OK (¡tablas creadas!), pero el
+          <code>seed</code> que corría justo después falló con auth — con la misma URL que recién
+          había funcionado. <strong>Causa probable:</strong> propagación de la password recién
+          reseteada entre nodos del pooler. <strong>Fix pragmático:</strong> en vez de depender
+          del arranque, corrimos el seed <em>una vez</em> desde la consola (conexión confiable)
+          contra la DB de prod, y desplegamos con <code>SEED_ON_START=false</code>.</p>
+        <div class="code">
+          <div class="filename">seed manual contra prod, una sola vez</div>
+<pre><code>DATABASE_URL="postgresql+psycopg2://...pooler...:5432/postgres?sslmode=require" \
+  ENVIRONMENT=production python -m app.db.seed
+<span class="cm"># → "Seed completo: 10 categorías y 44 subcategorías nuevas."</span></code></pre>
+        </div>
+        <div class="box concepto">
+          <p><span class="t">Lección.</span> No todo se resuelve "en el sistema": a veces lo
+          pragmático es sacar un paso frágil del camino crítico (el arranque) y hacerlo aparte.
+          El seed es idempotente, así que correrlo a mano es seguro.</p>
+        </div>
+      </section>
+
+      <section id="request">
+        <h2>7. Una request en producción, paso a paso</h2>
+        <p>Qué pasa cuando alguien hace login desde la app en vivo:</p>
+        <div class="flow">1. Browser → GET https://chambapp-a0472.web.app/         (Firebase CDN devuelve la SPA)
+2. React arranca; el usuario completa el form de login
+3. fetch POST /api/v1/auth/login                         (URL relativa, mismo origen)
+4. Firebase Hosting matchea la rewrite /api/**  → reenvía a Cloud Run (chambapp-api)
+5. Cloud Run levanta una instancia si estaba en cero (cold start) y corre FastAPI
+6. FastAPI valida credenciales: consulta Supabase por el Session pooler (IPv4 + SSL)
+7. bcrypt verifica el hash; se firma un JWT con SECRET_KEY (de Secret Manager)
+8. Respuesta { access_token } → vuelve por Firebase → al browser
+9. El front guarda el JWT en localStorage; las próximas requests llevan Authorization: Bearer</div>
+        <div class="box tip">
+          <p><span class="t">Sin CORS en ningún punto.</span> Como el browser siempre habla con
+          <code>chambapp-a0472.web.app</code> (el salto a Cloud Run es server-side, transparente),
+          nunca hay una petición cross-origin. Por eso no hubo que pelear con preflights.</p>
+        </div>
+      </section>
+
+      <section id="operar">
+        <h2>8. Operar y redeploy</h2>
+        <div class="code">
+          <div class="filename">redeploy del backend</div>
+<pre><code>gcloud builds submit backend --tag .../chambapp-api:NUEVO_TAG
+gcloud run deploy chambapp-api --image .../chambapp-api:NUEVO_TAG --region us-central1 \
+  --allow-unauthenticated \
+  --set-secrets=DATABASE_URL=DATABASE_URL:latest,SECRET_KEY=SECRET_KEY:latest</code></pre>
+        </div>
+        <div class="code">
+          <div class="filename">redeploy del frontend</div>
+<pre><code>cd frontend &amp;&amp; npm run build &amp;&amp; cd ..
+firebase deploy --only hosting --project chambapp-a0472</code></pre>
+        </div>
+        <div class="code">
+          <div class="filename">observabilidad</div>
+<pre><code>gcloud run services describe chambapp-api --region us-central1   # estado, URL, revisión
+gcloud logging read 'resource.labels.service_name="chambapp-api"' --limit=50 --freshness=1h
+gcloud run revisions list --service chambapp-api --region us-central1</code></pre>
+        </div>
+        <div class="box nota">
+          <p>Hay un workflow de GitHub Actions (<code>.github/workflows/deploy.yml</code>) listo
+          para automatizar esto en cada push a <code>main</code> vía Cloud Build + Workload
+          Identity Federation. Se activa con la variable <code>DEPLOY_ENABLED=true</code> y los
+          secrets de WIF (ver Fase 4).</p>
+        </div>
+      </section>
+
+      <section id="costos">
+        <h2>9. Costos y gotchas</h2>
+        <ul>
+          <li><strong>Costo ≈ $0</strong>: Firebase Hosting (free tier) + Cloud Run (escala a
+            cero, free tier) + Supabase (free). Sólo Artifact Registry usa unos MB de storage
+            (despreciable).</li>
+          <li><strong>Plan Blaze</strong>: el proyecto tiene billing linkeado (lo exige el rewrite
+            Firebase→Cloud Run). Conviene poner una <strong>alerta de presupuesto</strong> en GCP
+            Billing por las dudas.</li>
+          <li><strong>Supabase free pausa el proyecto tras ~7 días sin actividad</strong>: si un
+            día la app no trae datos, entrá al dashboard de Supabase y lo reactivás.</li>
+          <li><strong>Cold start</strong>: con escala a cero, la primera request tras inactividad
+            tarda un poco más. Se puede fijar <code>--min-instances=1</code> (a costa de pagar
+            siempre una instancia).</li>
+          <li><strong>Bajar todo</strong> si querés dejar de mantenerlo:
+            <code>gcloud run services delete chambapp-api --region us-central1</code>, borrar el
+            sitio de Firebase Hosting y pausar/borrar el proyecto de Supabase.</li>
+        </ul>
+      </section>
+
+      <section id="repaso">
+        <h2>Repaso de entrevista</h2>
+        <div class="box entrevista">
+          <p><span class="t">«Contame un deploy que se haya complicado.»</span><br>
+          El contenedor no arrancaba en Cloud Run. Leí los logs con <code>gcloud logging read</code>
+          y encontré que pydantic-settings intentaba parsear una env var de tipo lista como JSON;
+          lo arreglé con <code>NoDecode</code>. Después apareció un error de auth a la DB (password
+          desactualizada): lo verifiqué conectando con psycopg2 a mano, reseteé la password y
+          actualicé el secreto. Método: reproducir, aislar, arreglar.</p>
+        </div>
+        <div class="box entrevista">
+          <p><span class="t">«¿Cómo evitaste el CORS entre front y back?»</span><br>
+          Sirviendo ambos bajo el mismo dominio: Firebase Hosting reescribe <code>/api/**</code>
+          al servicio de Cloud Run. El salto es server-side, así que el browser nunca hace una
+          request cross-origin.</p>
+        </div>
+        <div class="box entrevista">
+          <p><span class="t">«¿Cómo conectaste Cloud Run con una DB externa gratis?»</span><br>
+          Supabase por el Session pooler (Supavisor), que expone IPv4 — necesario porque Cloud
+          Run hace egress IPv4 y la conexión directa de Supabase es IPv6. La URL va en Secret
+          Manager con <code>sslmode=require</code>.</p>
+        </div>
+        <p style="margin-top:24px">
+          <a href="fase-4.html">← Fase 4 (Docker &amp; Cloud Run)</a> &nbsp;·&nbsp;
+          <a href="index.html">Volver al índice →</a>
+        </p>
+      </section>
+    </main>
+  </div>
+
+  <footer>chambapp · Producción · material de estudio</footer>
+</body>
+</html>
