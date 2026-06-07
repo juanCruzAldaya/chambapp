@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-laburapp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-laburapp}
+      POSTGRES_DB: ${POSTGRES_DB:-laburappdb}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-laburapp}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-laburapp}:${POSTGRES_PASSWORD:-laburapp}@db:5432/${POSTGRES_DB:-laburappdb}
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-no-usar-en-prod}
+      ENVIRONMENT: local
+      BACKEND_CORS_ORIGINS: http://localhost:5173,http://localhost:3000
+      PORT: 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app  # hot-reload del código en desarrollo
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
