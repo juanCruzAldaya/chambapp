@@ -1,0 +1,15 @@
+# Cloud Build: construye la imagen del frontend horneando VITE_API_URL.
+# (gcloud builds submit no soporta --build-arg directo; por eso este config.)
+steps:
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "build"
+      - "--build-arg"
+      - "VITE_API_URL=${_VITE_API_URL}"
+      - "-t"
+      - "${_IMAGE}"
+      - "."
+images:
+  - "${_IMAGE}"
+options:
+  logging: CLOUD_LOGGING_ONLY

@@ -1,0 +1,44 @@
+# Despliegue continuo a Cloud Run vía Cloud Build.
+# Usa Workload Identity Federation (sin claves de service account).
+#
+# Requiere configurar en el repo (Settings → Secrets and variables → Actions):
+#   secrets.GCP_PROJECT_ID                 ID del proyecto GCP
+#   secrets.GCP_WORKLOAD_IDENTITY_PROVIDER  projects/N/locations/global/workloadIdentityPools/POOL/providers/PROVIDER
+#   secrets.GCP_DEPLOY_SA                   service-account de deploy (email)
+#
+# Ver infra/cloudrun/README.md (sección CI/CD) para crear el pool/proveedor.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Necesario para que google-github-actions/auth use OIDC.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # No corre si no están configurados los secretos de GCP.
+    if: ${{ vars.DEPLOY_ENABLED == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Cloud Build (build + deploy)
+        run: |
+          gcloud builds submit \
+            --config infra/cloudrun/cloudbuild.yaml \
+            --substitutions=_REGION=us-central1,_AR_REPO=chambapp,_API_SERVICE=chambapp-api,_WEB_SERVICE=chambapp-web,_DB_INSTANCE=chambapp-db,_TAG=${{ github.sha }}

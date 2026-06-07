@@ -1,0 +1,29 @@
+# Plantilla nginx para servir la SPA en Cloud Run.
+# El entrypoint de la imagen oficial sustituye ${PORT} (envsubst) al arrancar.
+# Las variables de nginx ($uri, $http_*) se dejan intactas (no están en el env).
+server {
+    listen       ${PORT};
+    listen       [::]:${PORT};
+    server_name  _;
+
+    root   /usr/share/nginx/html;
+    index  index.html;
+
+    # Assets con hash: cache larga.
+    location /assets/ {
+        try_files $uri =404;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # Healthcheck simple.
+    location = /healthz {
+        return 200 'ok';
+        add_header Content-Type text/plain;
+    }
+
+    # SPA: cualquier ruta cae en index.html (react-router).
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

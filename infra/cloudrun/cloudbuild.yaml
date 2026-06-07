@@ -1,0 +1,108 @@
+# Pipeline CI/CD de Cloud Build: build + deploy de API y frontend.
+# Pensado para un trigger en push a main, o invocado manualmente:
+#   gcloud builds submit --config infra/cloudrun/cloudbuild.yaml \
+#     --substitutions=_REGION=us-central1,_DB_INSTANCE=chambapp-db
+#
+# El orden importa: se despliega la API primero para conocer su URL,
+# que se hornea en el bundle del frontend (VITE_API_URL).
+
+substitutions:
+  _REGION: us-central1
+  _AR_REPO: chambapp
+  _API_SERVICE: chambapp-api
+  _WEB_SERVICE: chambapp-web
+  _DB_INSTANCE: chambapp-db
+  # Tag de las imágenes. ${_TAG} solo existe en triggers; con
+  # `gcloud builds submit` se pasa por --substitutions (o queda 'latest').
+  _TAG: latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  # 1) Build + push de la imagen de la API.
+  - id: build-api
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_API_SERVICE}:${_TAG}
+      - ./backend
+  - id: push-api
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_API_SERVICE}:${_TAG}
+
+  # 2) Deploy de la API (Cloud SQL + secrets).
+  - id: deploy-api
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_API_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_API_SERVICE}:${_TAG}
+      - --region=${_REGION}
+      - --platform=managed
+      - --allow-unauthenticated
+      - --add-cloudsql-instances=$PROJECT_ID:${_REGION}:${_DB_INSTANCE}
+      - --set-env-vars=ENVIRONMENT=production
+      - --set-secrets=DATABASE_URL=DATABASE_URL:latest,SECRET_KEY=SECRET_KEY:latest
+
+  # 3) Captura la URL de la API en el workspace.
+  - id: api-url
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        gcloud run services describe ${_API_SERVICE} --region=${_REGION} \
+          --format='value(status.url)' > /workspace/api_url.txt
+        echo "API: $$(cat /workspace/api_url.txt)"
+
+  # 4) Build + push del frontend horneando VITE_API_URL.
+  - id: build-web
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        docker build \
+          --build-arg VITE_API_URL="$$(cat /workspace/api_url.txt)/api/v1" \
+          -t ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_WEB_SERVICE}:${_TAG} \
+          ./frontend
+  - id: push-web
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_WEB_SERVICE}:${_TAG}
+
+  # 5) Deploy del frontend.
+  - id: deploy-web
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_WEB_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_WEB_SERVICE}:${_TAG}
+      - --region=${_REGION}
+      - --platform=managed
+      - --allow-unauthenticated
+
+  # 6) Actualiza el CORS de la API con la URL del frontend.
+  - id: update-cors
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        WEB_URL="$$(gcloud run services describe ${_WEB_SERVICE} --region=${_REGION} \
+          --format='value(status.url)')"
+        gcloud run services update ${_API_SERVICE} --region=${_REGION} \
+          --update-env-vars="BACKEND_CORS_ORIGINS=$$WEB_URL"
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_API_SERVICE}:${_TAG}
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_WEB_SERVICE}:${_TAG}

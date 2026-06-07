@@ -95,12 +95,30 @@ docker-compose.yml   local: postgres + api
       seed de categorías + tests pytest (30 tests)
 - [x] **Fase 3 — Frontend**: React 19 + Vite + Tailwind v4, auth, búsqueda de
       servicios, detalle + contratar, publicar, agenda, contrataciones, perfil
-- [ ] **Fase 4 — Cloud Run**: build → Artifact Registry → Cloud Run + Cloud SQL + CI/CD
+- [x] **Fase 4 — Cloud Run**: Dockerfiles (API + frontend nginx), Cloud SQL,
+      Artifact Registry, Secret Manager, CI/CD (Cloud Build + GitHub Actions)
 - [ ] **Fase 5 — GKE (estudio)**: manifests Deployment/Service/Ingress, HPA
 
-**Próximo paso sugerido:** Fase 4 — **Cloud Run**: dockerizar el frontend (build
-estático servido por nginx o Vite preview), publicar imágenes en Artifact Registry,
-desplegar backend + frontend en Cloud Run con Cloud SQL (Postgres) y CI/CD.
+**Próximo paso sugerido:** Fase 5 — **GKE**: trasladar lo de Cloud Run a Kubernetes
+(Deployments + Services + Ingress + HPA) como ejercicio de estudio. El backend ya
+está listo (imagen, migraciones por entrypoint, config por env/secrets).
+
+### Infra Fase 4 (`infra/cloudrun/`)
+
+- **Dos servicios Cloud Run**: `chambapp-api` (FastAPI) y `chambapp-web` (nginx
+  sirviendo la SPA). Imágenes en Artifact Registry.
+- **backend/entrypoint.sh**: corre `alembic upgrade head` (y seed opcional con
+  `SEED_ON_START=true`) antes de uvicorn. En prod NO se usa `create_all`.
+- **Cloud SQL** (Postgres) por unix socket; `DATABASE_URL` y `SECRET_KEY` en
+  **Secret Manager** (inyectados con `--set-secrets`).
+- **frontend/Dockerfile** multi-stage (Vite build → nginx en `$PORT`);
+  `VITE_API_URL` se hornea en build con la URL real de la API.
+- Scripts: `setup.sh` (provisión one-time), `deploy-backend.sh`, `deploy-frontend.sh`.
+- **CI/CD**: `.github/workflows/ci.yml` (ruff+pytest+build en cada PR) y
+  `deploy.yml` (CD a Cloud Run vía Cloud Build + Workload Identity Federation,
+  activable con la variable `DEPLOY_ENABLED=true`). Ver `infra/cloudrun/README.md`.
+- **docker-compose**: el servicio `api` resetea `entrypoint: []` para mantener
+  hot-reload en dev (no corre migraciones).
 
 > Nota Fase 3→backend: se agregó un endpoint público `GET /usuarios/{id}/calendarios`
 > (disponibilidad del profesional) para habilitar el flujo de contratación por turnos.

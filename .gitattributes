@@ -1,0 +1,8 @@
+# Forzar LF en archivos que se ejecutan en Linux/containers.
+# Evita el clásico "bad interpreter: No such file or directory" por CRLF.
+*.sh        text eol=lf
+entrypoint.sh text eol=lf
+Dockerfile  text eol=lf
+*.yaml      text eol=lf
+*.yml       text eol=lf
+*.template  text eol=lf

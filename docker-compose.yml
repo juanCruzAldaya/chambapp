@@ -27,6 +27,9 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app  # hot-reload del código en desarrollo
+    # Resetea el ENTRYPOINT de la imagen (que corre alembic) para usar
+    # hot-reload en dev; el esquema lo crea create_all (ENVIRONMENT=local).
+    entrypoint: []
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     depends_on:
       db:
