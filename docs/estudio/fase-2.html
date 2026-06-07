@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fase 2 · Backend de dominio · chambapp</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="inner">
+      <a class="brand" href="index.html">chamb<span>app</span> · estudio</a>
+      <nav>
+        <a href="index.html">Inicio</a>
+        <a href="fase-1.html">1 · Fundación</a>
+        <a href="fase-2.html" class="active">2 · Backend</a>
+        <a href="fase-3.html">3 · Frontend</a>
+        <a href="fase-4.html">4 · Cloud Run</a>
+        <a href="fase-5.html">5 · Kubernetes</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="toc">
+      <h4>En esta fase</h4>
+      <a href="#intro">Qué construimos</a>
+      <a href="#schemas">1. Schemas Pydantic</a>
+      <a href="#routers">2. Routers y endpoints</a>
+      <a href="#auth">3. Flujo de autenticación</a>
+      <a href="#patrones">4. Patrones de los endpoints</a>
+      <a href="#busqueda" class="sub">Búsqueda con filtros</a>
+      <a href="#permisos" class="sub">Permisos (dueño)</a>
+      <a href="#promedio" class="sub">Recalcular promedio</a>
+      <a href="#alembic">5. Alembic (migraciones)</a>
+      <a href="#tests">6. Tests con pytest</a>
+      <a href="#repaso">Repaso de entrevista</a>
+    </aside>
+
+    <main>
+      <h1>Fase 2 — Backend de dominio</h1>
+      <p class="subtitle">De la fundación a una API real: 41 rutas, validación,
+        autenticación, migraciones y 30 tests.</p>
+
+      <section id="intro">
+        <div class="lead">
+          Acá la API cobra vida. Sobre los modelos de la Fase 1 agregamos:
+          <strong>schemas Pydantic</strong> (contrato de entrada/salida),
+          <strong>routers</strong> (los endpoints), el <strong>flujo de auth</strong>
+          (registro + login JWT), <strong>Alembic</strong> (migraciones para prod) y
+          <strong>tests</strong> con pytest. Todo bajo <code>/api/v1</code>.
+        </div>
+
+        <div class="flow">Usuario ──&lt; Servicio &gt;── Categoria / SubCategoria
+   │           │
+   │           └──&lt; Resena (1-5)
+   ├──&lt; Calendario ──&lt; Evento (turnos)
+   ├──&lt; Contratacion &gt;── Servicio / Evento
+   ├──&lt; MetodoDePago
+   └──&lt; Direccion</div>
+      </section>
+
+      <section id="schemas">
+        <h2>1. Schemas Pydantic v2</h2>
+        <div class="box concepto">
+          <p><span class="t">Modelo ORM ≠ Schema.</span> El <strong>modelo</strong>
+          (Fase 1) representa la tabla. El <strong>schema</strong> Pydantic define
+          qué entra y qué sale por la API. Separarlos te da control: validás la
+          entrada y, sobre todo, <strong>elegís qué exponer</strong> (nunca el password).</p>
+        </div>
+
+        <div class="code">
+          <div class="filename">backend/app/schemas/user.py (extracto)</div>
+<pre><code><span class="kw">class</span> <span class="fn">UsuarioCreate</span>(UsuarioBase):
+    email: EmailStr                                <span class="cm"># valida formato de email</span>
+    password: <span class="kw">str</span> = Field(min_length=<span class="nb">8</span>, max_length=<span class="nb">128</span>)
+
+<span class="kw">class</span> <span class="fn">UsuarioRead</span>(UsuarioBase):
+    model_config = ConfigDict(from_attributes=<span class="kw">True</span>)
+    id: <span class="kw">int</span>
+    email: EmailStr
+    calificacion_promedio: Decimal | <span class="kw">None</span> = <span class="kw">None</span>
+    created_at: datetime
+    <span class="cm"># OJO: no hay campo "password". Nunca sale al cliente.</span></code></pre>
+        </div>
+
+        <ul>
+          <li><strong><code>UsuarioCreate</code></strong> (entrada): exige email válido
+            y password de 8+ caracteres. Si no cumple, FastAPI responde <strong>422</strong>
+            con el detalle, sin que escribas validación a mano.</li>
+          <li><strong><code>UsuarioRead</code></strong> (salida): define exactamente los
+            campos que el cliente ve. Como no incluye <code>password</code>, es imposible
+            filtrarlo (el error clásico del proyecto original).</li>
+          <li><strong><code>from_attributes=True</code></strong>: permite crear el schema
+            directamente desde el objeto ORM (<code>UsuarioRead.model_validate(usuario)</code>),
+            leyendo sus atributos. FastAPI lo hace solo al devolver el modelo.</li>
+          <li><strong><code>EmailStr</code>, <code>Field(min_length=...)</code></strong>:
+            validadores declarativos. El tipo <em>es</em> la validación.</li>
+        </ul>
+
+        <div class="box tip">
+          <p><span class="t">Validación de negocio en el schema:</span> la reseña valida
+          <code>calificacion: int = Field(ge=1, le=5)</code> (entre 1 y 5) y el evento
+          valida con un <code>model_validator</code> que <code>hora_fin &gt; hora_inicio</code>.
+          La regla vive cerca del dato.</p>
+        </div>
+      </section>
+
+      <section id="routers">
+        <h2>2. Routers y endpoints</h2>
+        <p>Cada dominio es un <code>APIRouter</code> en <code>app/api/routes/</code>, y
+          todos se montan en un router central con su prefijo y tag.</p>
+
+        <div class="code">
+          <div class="filename">backend/app/api/router.py (extracto)</div>
+<pre><code>api_router = APIRouter()
+api_router.include_router(auth.router, prefix=<span class="st">"/auth"</span>, tags=[<span class="st">"auth"</span>])
+api_router.include_router(users.router, prefix=<span class="st">"/usuarios"</span>, tags=[<span class="st">"usuarios"</span>])
+api_router.include_router(services.router, prefix=<span class="st">"/servicios"</span>, tags=[<span class="st">"servicios"</span>])
+<span class="cm"># ... categorias, calendarios, eventos, contrataciones, resenas, etc.</span></code></pre>
+        </div>
+        <ul>
+          <li><strong>Modularidad</strong>: un archivo por dominio. Fácil de navegar y testear.</li>
+          <li><strong><code>tags</code></strong>: agrupan los endpoints en Swagger
+            (<code>/docs</code>), que FastAPI genera automáticamente desde los tipos.</li>
+          <li><strong><code>prefix</code></strong>: la ruta final es
+            <code>/api/v1</code> + <code>/servicios</code> + la ruta del endpoint.</li>
+        </ul>
+      </section>
+
+      <section id="auth">
+        <h2>3. Flujo de autenticación (de punta a punta)</h2>
+
+        <div class="code">
+          <div class="filename">backend/app/api/routes/auth.py (extracto)</div>
+<pre><code><span class="nb">@router.post</span>(<span class="st">"/register"</span>, response_model=UsuarioRead, status_code=<span class="nb">201</span>)
+<span class="kw">def</span> <span class="fn">register</span>(payload: UsuarioCreate, db: DbSession) -> Usuario:
+    <span class="kw">if</span> db.query(Usuario).filter(Usuario.email == payload.email).first():
+        <span class="kw">raise</span> HTTPException(<span class="nb">409</span>, <span class="st">"Ya existe un usuario con ese email"</span>)
+    usuario = Usuario(email=payload.email, password=hash_password(payload.password), ...)
+    db.add(usuario); db.commit(); db.refresh(usuario)
+    <span class="kw">return</span> usuario
+
+<span class="nb">@router.post</span>(<span class="st">"/login"</span>, response_model=Token)
+<span class="kw">def</span> <span class="fn">login</span>(form_data: Annotated[OAuth2PasswordRequestForm, Depends()], db: DbSession):
+    usuario = db.query(Usuario).filter(Usuario.email == form_data.username).first()
+    <span class="kw">if</span> usuario <span class="kw">is</span> <span class="kw">None</span> <span class="kw">or</span> <span class="kw">not</span> verify_password(form_data.password, usuario.password):
+        <span class="kw">raise</span> HTTPException(<span class="nb">401</span>, <span class="st">"Email o contraseña incorrectos"</span>)
+    <span class="kw">return</span> Token(access_token=create_access_token(subject=usuario.email))</code></pre>
+        </div>
+
+        <p>El recorrido completo:</p>
+        <ol>
+          <li><strong>Registro</strong>: valida que el email no exista (si existe ⇒
+            <strong>409 Conflict</strong>), <em>hashea</em> el password y guarda. Devuelve
+            <code>UsuarioRead</code> (sin password) con <strong>201 Created</strong>.</li>
+          <li><strong>Login</strong>: usa <code>OAuth2PasswordRequestForm</code> (el estándar:
+            campos <code>username</code> y <code>password</code> en form-urlencoded). Busca
+            el usuario, verifica el hash con bcrypt y, si todo bien, firma un JWT.</li>
+          <li><strong>Request protegida</strong>: el cliente manda
+            <code>Authorization: Bearer &lt;token&gt;</code>; la dependencia
+            <code>get_current_user</code> (Fase 1) lo valida y entrega el usuario.</li>
+        </ol>
+
+        <div class="box ojo">
+          <p><span class="t">Detalle de seguridad:</span> ante credenciales malas, el
+          mensaje es genérico ("email o contraseña incorrectos") — no revela si el email
+          existe. Y la verificación usa <code>verify_password</code> aunque el usuario no
+          exista, para no filtrar info por el tiempo de respuesta.</p>
+        </div>
+
+        <div class="box entrevista">
+          <p><span class="t">«¿Por qué el login usa form-urlencoded y no JSON?»</span><br>
+          Porque seguimos el estándar <strong>OAuth2 password flow</strong>, que FastAPI
+          implementa con <code>OAuth2PasswordRequestForm</code>. Eso hace que el botón
+          "Authorize" de Swagger funcione directo y que clientes OAuth2 estándar
+          interoperen.</p>
+        </div>
+      </section>
+
+      <section id="patrones">
+        <h2>4. Patrones de los endpoints</h2>
+
+        <h3 id="busqueda">Búsqueda con filtros opcionales</h3>
+        <div class="code">
+          <div class="filename">backend/app/api/routes/services.py (extracto)</div>
+<pre><code><span class="nb">@router.get</span>(<span class="st">""</span>, response_model=<span class="kw">list</span>[ServicioRead])
+<span class="kw">def</span> <span class="fn">search_servicios</span>(db: DbSession, q: <span class="kw">str</span> | <span class="kw">None</span> = <span class="kw">None</span>,
+                     main_category: <span class="kw">int</span> | <span class="kw">None</span> = <span class="kw">None</span>,
+                     locality: <span class="kw">str</span> | <span class="kw">None</span> = <span class="kw">None</span>,
+                     skip: <span class="kw">int</span> = <span class="nb">0</span>, limit: <span class="kw">int</span> = <span class="nb">20</span>):
+    query = db.query(Servicio).options(joinedload(Servicio.profesional), ...)
+    <span class="kw">if</span> q:             query = query.filter(Servicio.description.ilike(<span class="st">f"%{q}%"</span>))
+    <span class="kw">if</span> main_category: query = query.filter(Servicio.main_category == main_category)
+    <span class="kw">if</span> locality:      query = query.filter(Servicio.locality == locality)
+    <span class="kw">return</span> query.order_by(Servicio.created_at.desc()).offset(skip).limit(limit).all()</code></pre>
+        </div>
+        <ul>
+          <li><strong>Query dinámica</strong>: arrancás de una query base y vas
+            <em>encadenando</em> <code>.filter()</code> sólo por los parámetros presentes.
+            Es el patrón estándar para búsquedas con filtros opcionales.</li>
+          <li><strong><code>joinedload</code></strong>: trae el profesional y la categoría
+            en el <em>mismo</em> query (evita el problema N+1: 1 consulta en vez de N).</li>
+          <li><strong><code>offset/limit</code></strong>: paginación. <code>ilike</code>
+            es búsqueda de texto case-insensitive.</li>
+        </ul>
+
+        <div class="box concepto">
+          <p><span class="t">Problema N+1.</span> Si listás 20 servicios y por cada uno
+          accedés a <code>servicio.profesional</code> sin precargar, son 1 + 20 = 21
+          queries. Con <code>joinedload</code>/<code>selectinload</code> lo resolvés en
+          1–2 queries. Es de las optimizaciones más preguntadas con ORMs.</p>
+        </div>
+
+        <h3 id="permisos">Permisos: sólo el dueño modifica</h3>
+        <div class="code">
+          <div class="filename">PATCH /servicios/{id} (extracto)</div>
+<pre><code>servicio = _get_servicio_o_404(db, servicio_id)
+<span class="kw">if</span> servicio.profesional_id != current_user.id:
+    <span class="kw">raise</span> HTTPException(<span class="nb">403</span>, <span class="st">"No podés modificar un servicio que no es tuyo"</span>)
+datos = payload.model_dump(exclude_unset=<span class="kw">True</span>)  <span class="cm"># sólo lo que mandó el cliente</span>
+<span class="kw">for</span> campo, valor <span class="kw">in</span> datos.items():
+    <span class="kw">setattr</span>(servicio, campo, valor)
+db.commit()</code></pre>
+        </div>
+        <ul>
+          <li><strong>404 vs 403</strong>: si no existe ⇒ 404; si existe pero no es tuyo
+            ⇒ <strong>403 Forbidden</strong>. Distinción importante en una API REST.</li>
+          <li><strong><code>exclude_unset=True</code></strong>: hace el PATCH <em>parcial</em>
+            real — sólo toca los campos que el cliente envió, no pisa el resto con
+            <code>None</code>.</li>
+        </ul>
+
+        <h3 id="promedio">Efecto secundario: recalcular el promedio</h3>
+        <div class="code">
+          <div class="filename">backend/app/api/routes/reviews.py (extracto)</div>
+<pre><code><span class="kw">def</span> <span class="fn">_recalcular_promedio_profesional</span>(db, profesional_id):
+    promedio = (db.query(func.avg(Resena.calificacion))
+                  .join(Servicio, Resena.servicio_id == Servicio.id)
+                  .filter(Servicio.profesional_id == profesional_id).scalar())
+    profesional = db.get(Usuario, profesional_id)
+    profesional.calificacion_promedio = Decimal(promedio).quantize(Decimal(<span class="st">"0.01"</span>)) ...
+
+<span class="cm"># al crear la reseña:</span>
+db.add(resena)
+db.flush()                              <span class="cm"># persiste la reseña ANTES de promediar</span>
+_recalcular_promedio_profesional(db, servicio.profesional_id)
+db.commit()                             <span class="cm"># reseña + promedio en una sola transacción</span></code></pre>
+        </div>
+        <ul>
+          <li><strong><code>func.avg(...)</code></strong>: el promedio lo calcula
+            <em>Postgres</em>, no Python (más rápido y exacto).</li>
+          <li><strong><code>flush</code> vs <code>commit</code></strong>: <code>flush</code>
+            manda el INSERT a la base (para que el AVG la cuente) pero <em>dentro</em> de la
+            transacción; <code>commit</code> confirma todo junto. Si algo falla, se revierte
+            la reseña y el promedio juntos: <strong>atomicidad</strong>.</li>
+        </ul>
+
+        <div class="box entrevista">
+          <p><span class="t">«¿Diferencia entre flush y commit?»</span><br>
+          <code>flush</code> sincroniza los cambios pendientes con la base (ejecuta el SQL)
+          pero no cierra la transacción; los cambios todavía se pueden hacer rollback.
+          <code>commit</code> hace flush y además confirma la transacción de forma
+          permanente.</p>
+        </div>
+      </section>
+
+      <section id="alembic">
+        <h2>5. Alembic — migraciones</h2>
+        <div class="box concepto">
+          <p><span class="t">¿Qué es una migración?</span> El esquema de la base cambia con
+          el tiempo (nueva columna, nueva tabla). Una migración es un archivo versionado
+          con <code>upgrade()</code> (aplicar el cambio) y <code>downgrade()</code>
+          (revertirlo). Alembic es "git para el esquema": cada migración encadena con la
+          anterior y la base recuerda en qué versión está.</p>
+        </div>
+
+        <p>El flujo diario son dos comandos:</p>
+        <div class="code">
+          <div class="filename">flujo de Alembic</div>
+<pre><code><span class="cm"># 1) cambiás un modelo y autogenerás la migración comparando modelos vs base:</span>
+alembic revision --autogenerate -m <span class="st">"agregar telefono a usuarios"</span>
+<span class="cm"># 2) la aplicás:</span>
+alembic upgrade head      <span class="cm"># head = la última versión</span></code></pre>
+        </div>
+        <ul>
+          <li><strong><code>env.py</code></strong> lee <code>settings.DATABASE_URL</code>
+            (no se hardcodea) e importa <code>Base.metadata</code> (por eso cada modelo
+            debe importarse en <code>models/__init__.py</code>: si no, Alembic no lo "ve").</li>
+          <li><strong>local vs prod</strong>: en local alcanzaba <code>create_all</code>;
+            en prod <strong>siempre</strong> Alembic, porque preserva los datos y es reversible.</li>
+        </ul>
+        <div class="box ojo">
+          <p><span class="t">Siempre revisá el autogenerate.</span> Detecta muy bien tablas
+          y columnas nuevas, pero un <em>rename</em> lo ve como "borrar + crear" (perderías
+          datos). Leé el archivo generado antes de aplicarlo.</p>
+        </div>
+      </section>
+
+      <section id="tests">
+        <h2>6. Tests con pytest</h2>
+        <p>30 tests cubren cada vertical. La clave está en el <code>conftest.py</code>:
+          una base <strong>SQLite en memoria</strong> y un override de <code>get_db</code>,
+          así los tests no necesitan Postgres y corren en segundos.</p>
+
+        <div class="code">
+          <div class="filename">backend/tests/conftest.py (extracto)</div>
+<pre><code>engine = create_engine(<span class="st">"sqlite://"</span>, connect_args={<span class="st">"check_same_thread"</span>: <span class="kw">False</span>},
+                       poolclass=StaticPool)  <span class="cm"># 1 sola conexión en memoria</span>
+
+<span class="nb">@pytest.fixture</span>
+<span class="kw">def</span> <span class="fn">client</span>(db):
+    <span class="kw">def</span> <span class="fn">override_get_db</span>():
+        <span class="kw">yield</span> db
+    app.dependency_overrides[get_db] = override_get_db   <span class="cm"># inyecta la DB de test</span>
+    <span class="kw">with</span> TestClient(app) <span class="kw">as</span> c:
+        <span class="kw">yield</span> c</code></pre>
+        </div>
+        <ul>
+          <li><strong>Override de dependencias</strong>: <code>app.dependency_overrides</code>
+            reemplaza <code>get_db</code> por uno que usa la base de test. Toda la app, sin
+            tocar su código, ahora habla con SQLite. Es <em>la</em> razón de usar DI.</li>
+          <li><strong>Aislamiento</strong>: el esquema se crea y se borra por test, así
+            cada uno parte de cero.</li>
+          <li><strong>Truco real</strong>: el conftest setea <code>ENVIRONMENT=test</code>
+            antes de importar la app para que el <code>lifespan</code> no intente tocar
+            Postgres con <code>create_all</code>.</li>
+        </ul>
+        <div class="code">
+          <div class="filename">un test de extremo a extremo</div>
+<pre><code><span class="kw">def</span> <span class="fn">test_resena_actualiza_promedio_profesional</span>(client, db):
+    <span class="cm"># dos clientes califican 4 y 5 → el promedio del profesional debe ser 4.50</span>
+    ...
+    perfil = client.get(<span class="st">f"/api/v1/usuarios/{pro_id}"</span>).json()
+    <span class="kw">assert</span> <span class="kw">float</span>(perfil[<span class="st">"calificacion_promedio"</span>]) == <span class="nb">4.5</span></code></pre>
+        </div>
+        <div class="box tip">
+          <p><span class="t">Por qué SQLite alcanza:</span> los modelos usan tipos
+          genéricos (<code>String</code>, <code>Integer</code>, <code>Numeric</code>,
+          <code>DateTime</code>) que funcionan igual en SQLite y Postgres. Para tests de
+          lógica de negocio es ideal; lo específico de Postgres se prueba en integración.</p>
+        </div>
+      </section>
+
+      <section id="repaso">
+        <h2>Repaso de entrevista</h2>
+        <div class="box entrevista">
+          <p><span class="t">«¿Por qué separar schemas de modelos?»</span><br>
+          Para desacoplar la representación interna (tabla) del contrato público (API):
+          validás la entrada, controlás exactamente qué sale (sin filtrar campos
+          sensibles) y podés versionar la API sin tocar la base.</p>
+        </div>
+        <div class="box entrevista">
+          <p><span class="t">«¿Cómo testeás sin levantar Postgres?»</span><br>
+          SQLite en memoria + override de la dependencia <code>get_db</code>. Gracias a la
+          inyección de dependencias, reemplazo la sesión real por una de test sin tocar el
+          código de la app.</p>
+        </div>
+        <div class="box entrevista">
+          <p><span class="t">«¿Cómo garantizás consistencia al crear una reseña?»</span><br>
+          La reseña y el recálculo del promedio del profesional van en la <em>misma</em>
+          transacción (<code>flush</code> + <code>commit</code>). Si una falla, se revierten
+          ambas: atomicidad.</p>
+        </div>
+        <p style="margin-top:24px">
+          <a href="fase-1.html">← Fase 1</a> &nbsp;·&nbsp;
+          <a href="fase-3.html">Siguiente: Fase 3 — Frontend →</a>
+        </p>
+      </section>
+    </main>
+  </div>
+
+  <footer>chambapp · Fase 2 · material de estudio</footer>
+</body>
+</html>

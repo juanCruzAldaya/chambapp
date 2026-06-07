@@ -1,0 +1,29 @@
+# Ingress GCE (un Load Balancer HTTP global de Google).
+# Enruta por path: /api/* -> backend, todo lo demás -> frontend.
+# Mismo origen => sin CORS. El health check del LB usa las readinessProbe
+# de los pods (/health en la API, /healthz en el front).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chambapp
+  namespace: chambapp
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /api/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: chambapp-api
+                port:
+                  number: 80
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: chambapp-web
+                port:
+                  number: 80

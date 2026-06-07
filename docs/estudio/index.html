@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>chambapp · Guías de estudio</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="inner">
+      <a class="brand" href="index.html">chamb<span>app</span> · estudio</a>
+      <nav>
+        <a href="index.html" class="active">Inicio</a>
+        <a href="fase-1.html">1 · Fundación</a>
+        <a href="fase-2.html">2 · Backend</a>
+        <a href="fase-3.html">3 · Frontend</a>
+        <a href="fase-4.html">4 · Cloud Run</a>
+        <a href="fase-5.html">5 · Kubernetes</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="layout">
+    <main style="grid-column: 1 / -1;">
+      <h1>Guías de estudio de chambapp</h1>
+      <p class="subtitle">
+        Una explicación profunda, fase por fase, de cada decisión técnica del
+        proyecto: el <em>qué</em>, el <em>cómo</em> y sobre todo el <em>por qué</em>.
+      </p>
+
+      <div class="lead">
+        <strong>chambapp</strong> es un marketplace de changas (servicios)
+        reconstruido como proyecto cloud-native: <strong>FastAPI + SQLAlchemy 2.0
+        + PostgreSQL</strong> en el backend, <strong>React 19 + TypeScript +
+        Vite + Tailwind</strong> en el frontend, y despliegue en
+        <strong>Cloud Run</strong> y <strong>GKE</strong>. Estas guías están
+        pensadas para estudiar a fondo y para defender el proyecto en entrevistas.
+      </div>
+
+      <h2>Las cinco fases</h2>
+      <div class="cards">
+        <a class="card" href="fase-1.html">
+          <div class="n">FASE 1</div>
+          <h3>Fundación del backend</h3>
+          <p>SQLAlchemy 2.0 (estilo Mapped), modelos ORM y relaciones, config con
+             pydantic-settings, engine/session, JWT + bcrypt, Docker base.</p>
+        </a>
+        <a class="card" href="fase-2.html">
+          <div class="n">FASE 2</div>
+          <h3>Backend de dominio</h3>
+          <p>Schemas Pydantic v2, routers FastAPI, inyección de dependencias,
+             flujo de autenticación, Alembic (migraciones) y tests con pytest.</p>
+        </a>
+        <a class="card" href="fase-3.html">
+          <div class="n">FASE 3</div>
+          <h3>Frontend React</h3>
+          <p>Componentes y hooks, Context para auth, react-router, cliente fetch
+             tipado, TypeScript de punta a punta y Tailwind v4.</p>
+        </a>
+        <a class="card" href="fase-4.html">
+          <div class="n">FASE 4</div>
+          <h3>Docker & Cloud Run</h3>
+          <p>Imágenes Docker, Cloud Run, Cloud SQL, Secret Manager, Artifact
+             Registry y CI/CD con Cloud Build + GitHub Actions.</p>
+        </a>
+        <a class="card" href="fase-5.html">
+          <div class="n">FASE 5</div>
+          <h3>Kubernetes / GKE</h3>
+          <p>De Cloud Run a Kubernetes: Pods, Deployments, Services, Ingress, HPA,
+             Secrets y Workload Identity. Con enfoque práctico y de entrevista.</p>
+        </a>
+      </div>
+
+      <h2>Cómo usar estas guías</h2>
+      <ul>
+        <li>Cada página es independiente y se abre con doble clic (no necesita internet).</li>
+        <li>Los recuadros marcan el tipo de contenido:
+          <span class="tag">🧠 concepto</span>
+          <span class="tag">💡 tip</span>
+          <span class="tag">⚠️ ojo</span>
+          <span class="tag">🎯 entrevista</span>.
+        </li>
+        <li>El bloque <span class="tag">🎯 entrevista</span> simula preguntas típicas
+            con su respuesta corta, para practicar.</li>
+      </ul>
+    </main>
+  </div>
+
+  <footer>
+    chambapp · material de estudio · generado junto al proyecto.
+  </footer>
+</body>
+</html>

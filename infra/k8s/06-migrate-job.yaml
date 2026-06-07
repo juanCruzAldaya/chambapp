@@ -1,0 +1,49 @@
+# Job de migraciones: corre `alembic upgrade head` (+ seed) una sola vez,
+# en vez de en cada réplica de la API. El proxy va como "native sidecar"
+# (initContainer con restartPolicy: Always): arranca primero y se termina
+# solo cuando el contenedor de migración finaliza (GKE 1.29+).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: chambapp-migrate
+  namespace: chambapp
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      serviceAccountName: chambapp
+      restartPolicy: Never
+      initContainers:
+        - name: cloud-sql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+          restartPolicy: Always # ← lo convierte en native sidecar
+          args:
+            - "--structured-logs"
+            - "--port=5432"
+            - "${INSTANCE_CONNECTION_NAME}"
+          securityContext:
+            runAsNonRoot: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+      containers:
+        - name: migrate
+          image: ${API_IMAGE}
+          command: ["sh", "-c", "alembic upgrade head && python -m app.db.seed"]
+          env:
+            - name: ENVIRONMENT
+              value: production
+          envFrom:
+            - secretRef:
+                name: chambapp-secrets
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

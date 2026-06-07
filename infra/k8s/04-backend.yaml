@@ -1,0 +1,85 @@
+# API FastAPI. El Cloud SQL Auth Proxy va como sidecar: el contenedor de la
+# app habla con Postgres en 127.0.0.1:5432 y el proxy tuneliza a Cloud SQL.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chambapp-api
+  namespace: chambapp
+  labels:
+    app: chambapp-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: chambapp-api
+  template:
+    metadata:
+      labels:
+        app: chambapp-api
+    spec:
+      serviceAccountName: chambapp
+      containers:
+        # ─── App ───────────────────────────────────────────
+        - name: api
+          image: ${API_IMAGE}
+          ports:
+            - containerPort: 8080
+          env:
+            - name: ENVIRONMENT
+              value: production
+            - name: PORT
+              value: "8080"
+            # Las migraciones las corre el Job aparte, no cada réplica.
+            - name: RUN_MIGRATIONS
+              value: "false"
+          envFrom:
+            - secretRef:
+                name: chambapp-secrets
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+        # ─── Cloud SQL Auth Proxy (sidecar) ────────────────
+        - name: cloud-sql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+          args:
+            - "--structured-logs"
+            - "--port=5432"
+            - "${INSTANCE_CONNECTION_NAME}"
+          securityContext:
+            runAsNonRoot: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chambapp-api
+  namespace: chambapp
+spec:
+  type: ClusterIP
+  selector:
+    app: chambapp-api
+  ports:
+    - port: 80
+      targetPort: 8080

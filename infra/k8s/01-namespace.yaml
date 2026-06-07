@@ -1,0 +1,7 @@
+# Namespace propio para aislar todos los recursos de chambapp.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: chambapp
+  labels:
+    app.kubernetes.io/part-of: chambapp

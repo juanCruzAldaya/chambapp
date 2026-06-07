@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fase 5 · Kubernetes / GKE · chambapp</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="inner">
+      <a class="brand" href="index.html">chamb<span>app</span> · estudio</a>
+      <nav>
+        <a href="index.html">Inicio</a>
+        <a href="fase-1.html">1 · Fundación</a>
+        <a href="fase-2.html">2 · Backend</a>
+        <a href="fase-3.html">3 · Frontend</a>
+        <a href="fase-4.html">4 · Cloud Run</a>
+        <a href="fase-5.html" class="active">5 · Kubernetes</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="toc">
+      <h4>En esta fase</h4>
+      <a href="#intro">Qué es y para qué sirve</a>
+      <a href="#cuando">¿Cuándo usarlo? (y cuándo no)</a>
+      <a href="#vocab">El vocabulario mínimo</a>
+      <a href="#mapeo">Cómo se integra en chambapp</a>
+      <a href="#codigo">El código, manifest por manifest</a>
+      <a href="#deployment" class="sub">Deployment + sidecar</a>
+      <a href="#service" class="sub">Service</a>
+      <a href="#ingress" class="sub">Ingress</a>
+      <a href="#hpa" class="sub">HPA</a>
+      <a href="#secret" class="sub">Secret + Workload Identity</a>
+      <a href="#job" class="sub">Job de migración</a>
+      <a href="#empezar">Empezar HOY (gratis, local)</a>
+      <a href="#kubectl">kubectl de bolsillo</a>
+      <a href="#repaso">Repaso de entrevista</a>
+    </aside>
+
+    <main>
+      <h1>Fase 5 — Kubernetes / GKE</h1>
+      <p class="subtitle">Lo mismo que hicimos en Cloud Run, pero orquestado con Kubernetes.
+        Enfoque práctico: para estudiarlo, usarlo y defenderlo en una entrevista.</p>
+
+      <section id="intro">
+        <div class="lead">
+          <strong>Kubernetes (k8s)</strong> es un orquestador de contenedores: vos le
+          describís <em>el estado deseado</em> ("quiero 2 réplicas de esta imagen, expuestas
+          acá, que se autoescalen") y él se encarga de lograrlo y mantenerlo — reinicia lo que
+          se cae, reemplaza nodos, balancea carga. <strong>GKE</strong> es Kubernetes
+          gestionado por Google (vos no administrás el "cerebro" del cluster).
+        </div>
+
+        <div class="box concepto">
+          <p><span class="t">La idea central: estado declarativo.</span> No le decís a k8s
+          "arrancá un contenedor" (imperativo). Le decís "el mundo debería verse así"
+          (declarativo, en YAML) y un bucle de control (<em>reconciliation loop</em>) trabaja
+          sin parar para que la realidad coincida con tu declaración. Si un pod muere, k8s nota
+          la diferencia y crea otro. Esto es lo que hay que entender de verdad.</p>
+        </div>
+      </section>
+
+      <section id="cuando">
+        <h2>¿Cuándo usarlo? (y cuándo no)</h2>
+        <p>Lo más valioso para una entrevista no es recitar objetos, es saber <strong>cuándo
+          conviene</strong>. Sé honesto:</p>
+        <table>
+          <tr><th>Usá Cloud Run / serverless si…</th><th>Usá Kubernetes si…</th></tr>
+          <tr>
+            <td>Tenés pocos servicios y querés simpleza.</td>
+            <td>Tenés muchos microservicios que coordinar.</td>
+          </tr>
+          <tr>
+            <td>El tráfico es variable y querés escalar a cero.</td>
+            <td>Necesitás control fino: sidecars, jobs, demonios, redes internas, afinidad de nodos.</td>
+          </tr>
+          <tr>
+            <td>No querés gestionar infraestructura.</td>
+            <td>Ya tenés un equipo de plataforma / requisitos multi-cloud o on-prem.</td>
+          </tr>
+          <tr>
+            <td>Es un MVP, un portfolio, una API chica.</td>
+            <td>Cargas de trabajo complejas, stateful, o políticas de despliegue avanzadas.</td>
+          </tr>
+        </table>
+        <div class="box ojo">
+          <p><span class="t">Para chambapp, Cloud Run alcanza y sobra.</span> La Fase 5 es
+          <em>de estudio</em>: el objetivo es entender k8s con un proyecto real, no porque la
+          app lo necesite. Decir esto en una entrevista demuestra criterio, no ignorancia:
+          "elegí la herramienta más simple que resuelve el problema; sé usar k8s para cuando
+          haga falta".</p>
+        </div>
+        <div class="box entrevista">
+          <p><span class="t">«¿Cuándo NO usarías Kubernetes?»</span><br>
+          Cuando la complejidad operativa supera el beneficio: proyectos chicos, equipos sin
+          plataforma, o cuando un serverless (Cloud Run/Lambda) cubre el caso. k8s es potente
+          pero tiene un costo de operación y aprendizaje que hay que justificar.</p>
+        </div>
+      </section>
+
+      <section id="vocab">
+        <h2>El vocabulario mínimo</h2>
+        <p>Con estos 8 objetos entendés el 90% de un cluster:</p>
+        <table>
+          <tr><th>Objeto</th><th>Qué es (en una línea)</th></tr>
+          <tr><td><strong>Pod</strong></td><td>La unidad mínima: uno o más contenedores que comparten red y viven juntos. Efímero.</td></tr>
+          <tr><td><strong>Deployment</strong></td><td>Mantiene N réplicas de un pod y maneja los <em>rollouts</em> (actualizaciones sin downtime) y rollbacks.</td></tr>
+          <tr><td><strong>Service</strong></td><td>Una IP/nombre interno estable que balancea entre los pods (que van y vienen).</td></tr>
+          <tr><td><strong>Ingress</strong></td><td>Enrutador HTTP de entrada: mapea URLs/paths a Services. Es el Load Balancer público.</td></tr>
+          <tr><td><strong>HPA</strong></td><td>HorizontalPodAutoscaler: ajusta el número de réplicas según CPU/memoria/métricas.</td></tr>
+          <tr><td><strong>Namespace</strong></td><td>Una "carpeta" lógica para aislar y agrupar recursos (ej. <code>chambapp</code>).</td></tr>
+          <tr><td><strong>Secret / ConfigMap</strong></td><td>Inyectan secretos / configuración a los pods como env vars o archivos.</td></tr>
+          <tr><td><strong>Job</strong></td><td>Corre una tarea hasta completarse (ej. migraciones) y termina; no es un servicio.</td></tr>
+        </table>
+        <div class="box concepto">
+          <p><span class="t">La jerarquía mental.</span> Un <strong>Deployment</strong> crea
+          <strong>ReplicaSets</strong> que crean <strong>Pods</strong> que contienen
+          <strong>contenedores</strong>. Un <strong>Service</strong> les da una dirección
+          estable. Un <strong>Ingress</strong> abre la puerta desde internet a los Services.</p>
+        </div>
+      </section>
+
+      <section id="mapeo">
+        <h2>Cómo se integra en chambapp</h2>
+        <p>Tomamos exactamente las <em>mismas imágenes</em> Docker de la Fase 4 y las
+          describimos como objetos de k8s. El mapeo es directo:</p>
+        <table>
+          <tr><th>En Cloud Run (Fase 4)</th><th>En Kubernetes (Fase 5)</th></tr>
+          <tr><td>Servicio <code>chambapp-api</code></td><td><code>Deployment</code> + <code>Service</code> de la API (con sidecar del proxy)</td></tr>
+          <tr><td>Servicio <code>chambapp-web</code></td><td><code>Deployment</code> + <code>Service</code> del frontend</td></tr>
+          <tr><td>Routing por URL</td><td><code>Ingress</code> (un Load Balancer, routing por path)</td></tr>
+          <tr><td>Escalado automático integrado</td><td><code>HPA</code> explícito (por CPU)</td></tr>
+          <tr><td><code>--set-secrets</code></td><td>objeto <code>Secret</code> + <code>envFrom</code></td></tr>
+          <tr><td><code>--add-cloudsql-instances</code></td><td>Cloud SQL Auth Proxy como <em>sidecar</em> + Workload Identity</td></tr>
+          <tr><td>Migraciones en el entrypoint</td><td><code>Job</code> dedicado de migración</td></tr>
+        </table>
+        <div class="flow">                          Ingress (Load Balancer HTTP)
+                          /api/*  ┌──────────────┐
+   internet ───────────►─────────┤ Service api  ├─► Pods api  (api + cloud-sql-proxy)
+                          /*      └──────────────┘                     │
+                                  ┌──────────────┐                     ▼
+                          ───────►┤ Service web  ├─► Pods web      Cloud SQL
+                                  └──────────────┘  (nginx SPA)   (Postgres)</div>
+        <div class="box tip">
+          <p><span class="t">Decisión de diseño:</span> en k8s usamos el Ingress para servir
+          front y API <strong>en el mismo dominio</strong> (<code>/api/*</code> → backend, el
+          resto → frontend). Eso elimina el CORS: por eso la imagen del front se construye con
+          <code>VITE_API_URL=/api/v1</code> (relativo). Misma imagen base, distinta config de build.</p>
+        </div>
+      </section>
+
+      <section id="codigo">
+        <h2>El código, manifest por manifest</h2>
+        <p>Todo vive en <code>infra/k8s/</code>. Los <code>${VAR}</code> se resuelven con
+          <code>envsubst</code> dentro de <code>deploy.sh</code>.</p>
+
+        <h3 id="deployment">Deployment + sidecar del proxy</h3>
+        <div class="code">
+          <div class="filename">infra/k8s/04-backend.yaml (extracto)</div>
+<pre><code><span class="kw">kind:</span> Deployment
+<span class="kw">spec:</span>
+  replicas: 2                      <span class="cm"># estado deseado: 2 pods siempre</span>
+  template:
+    spec:
+      serviceAccountName: chambapp <span class="cm"># identidad (Workload Identity)</span>
+      containers:
+        - name: api
+          image: ${API_IMAGE}
+          env:
+            - name: RUN_MIGRATIONS
+              value: <span class="st">"false"</span>     <span class="cm"># las migra el Job, no cada réplica</span>
+          envFrom:
+            - secretRef:
+                name: chambapp-secrets   <span class="cm"># DATABASE_URL, SECRET_KEY</span>
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }  <span class="cm"># ¿lista para recibir tráfico?</span>
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }  <span class="cm"># ¿hay que reiniciarla?</span>
+        - name: cloud-sql-proxy       <span class="cm"># SIDECAR: 2º contenedor en el mismo pod</span>
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+          args: [<span class="st">"--port=5432"</span>, <span class="st">"${INSTANCE_CONNECTION_NAME}"</span>]</code></pre>
+        </div>
+        <ul>
+          <li><strong><code>replicas: 2</code></strong>: el Deployment garantiza dos pods. Si
+            uno muere, crea otro. Para actualizar, hace <em>rolling update</em> (levanta los
+            nuevos antes de bajar los viejos ⇒ sin downtime).</li>
+          <li><strong>Sidecar</strong>: el pod tiene 2 contenedores — la API y el
+            <em>Cloud SQL Auth Proxy</em>. Comparten <code>localhost</code>, así la app se
+            conecta a <code>127.0.0.1:5432</code> y el proxy tuneliza a Cloud SQL. Es el patrón
+            sidecar: un ayudante que vive pegado a la app.</li>
+          <li><strong><code>readinessProbe</code></strong>: hasta que <code>/health</code> no
+            responde OK, k8s no le manda tráfico (ni la cuenta como lista en un rollout).</li>
+          <li><strong><code>livenessProbe</code></strong>: si deja de responder, k8s
+            <em>reinicia</em> el contenedor. Autocuración.</li>
+        </ul>
+        <div class="box concepto">
+          <p><span class="t">Pod = contenedores que viven juntos.</span> El sidecar muestra
+          por qué el Pod (no el contenedor) es la unidad mínima: a veces necesitás procesos
+          que compartan red y ciclo de vida (app + proxy, app + agente de logs, etc.).</p>
+        </div>
+
+        <h3 id="service">Service</h3>
+        <div class="code">
+          <div class="filename">infra/k8s/04-backend.yaml (Service)</div>
+<pre><code><span class="kw">kind:</span> Service
+<span class="kw">spec:</span>
+  type: ClusterIP            <span class="cm"># IP interna (no expuesta a internet)</span>
+  selector:
+    app: chambapp-api        <span class="cm"># enruta a los pods con esta etiqueta</span>
+  ports:
+    - port: 80
+      targetPort: 8080       <span class="cm"># el puerto del contenedor</span></code></pre>
+        </div>
+        <div class="box concepto">
+          <p><span class="t">¿Por qué hace falta un Service?</span> Los pods son efímeros: nacen
+          y mueren con IPs distintas. El Service te da un <strong>nombre e IP estables</strong>
+          (<code>chambapp-api</code>) y balancea entre los pods vivos que matcheen el
+          <code>selector</code>. Otros componentes hablan con el Service, no con pods directos.</p>
+        </div>
+
+        <h3 id="ingress">Ingress</h3>
+        <div class="code">
+          <div class="filename">infra/k8s/07-ingress.yaml (extracto)</div>
+<pre><code><span class="kw">kind:</span> Ingress
+<span class="kw">spec:</span>
+  rules:
+    - http:
+        paths:
+          - path: /api/*           <span class="cm"># todo lo que empiece con /api…</span>
+            backend: { service: { name: chambapp-api, port: { number: 80 } } }
+          - path: /*               <span class="cm"># …el resto</span>
+            backend: { service: { name: chambapp-web, port: { number: 80 } } }</code></pre>
+        </div>
+        <ul>
+          <li><strong>Un solo Load Balancer</strong> para toda la app, con routing por path.
+            En GKE, crear este Ingress provisiona un balanceador HTTP de Google.</li>
+          <li><strong>Mismo origen ⇒ sin CORS</strong>: front y API comparten dominio.</li>
+          <li>El health check del balanceador usa las <code>readinessProbe</code> de los pods.</li>
+        </ul>
+
+        <h3 id="hpa">HPA — autoescalado</h3>
+        <div class="code">
+          <div class="filename">infra/k8s/08-hpa.yaml (extracto)</div>
+<pre><code><span class="kw">kind:</span> HorizontalPodAutoscaler
+<span class="kw">spec:</span>
+  scaleTargetRef: { kind: Deployment, name: chambapp-api }
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }</code></pre>
+        </div>
+        <p>Traducción: "mantené el uso de CPU promedio cerca del 70%; si sube, agregá pods
+          (hasta 6); si baja, sacá pods (mínimo 2)". k8s ajusta solo.</p>
+
+        <h3 id="secret">Secret + Workload Identity</h3>
+        <div class="code">
+          <div class="filename">infra/k8s/02-serviceaccount.yaml</div>
+<pre><code><span class="kw">kind:</span> ServiceAccount
+<span class="kw">metadata:</span>
+  name: chambapp
+  annotations:
+    iam.gke.io/gcp-service-account: ${GSA_EMAIL}   <span class="cm"># vincula KSA ↔ GSA de Google</span></code></pre>
+        </div>
+        <div class="box concepto">
+          <p><span class="t">Workload Identity.</span> En vez de meter una clave JSON de Google
+          en el pod (peligroso), se vincula la <em>ServiceAccount de Kubernetes</em> (KSA) con
+          una <em>ServiceAccount de Google</em> (GSA) que tiene permiso de Cloud SQL. El proxy
+          usa esa identidad automáticamente. <strong>Cero claves</strong> en el cluster. Es el
+          mismo principio de WIF que vimos para CI/CD en la Fase 4.</p>
+        </div>
+        <p>El <code>Secret</code> con <code>DATABASE_URL</code> y <code>SECRET_KEY</code> lo crea
+          <code>deploy.sh</code> con <code>kubectl create secret</code> (leyendo de Secret
+          Manager), y el Deployment lo monta con <code>envFrom</code>.</p>
+
+        <h3 id="job">Job de migración</h3>
+        <div class="code">
+          <div class="filename">infra/k8s/06-migrate-job.yaml (extracto)</div>
+<pre><code><span class="kw">kind:</span> Job
+<span class="kw">spec:</span>
+  template:
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: cloud-sql-proxy
+          restartPolicy: Always      <span class="cm"># ← "native sidecar": vive durante el job y se cierra solo</span>
+          image: ...cloud-sql-proxy:2.14.1
+      containers:
+        - name: migrate
+          image: ${API_IMAGE}
+          command: [<span class="st">"sh"</span>, <span class="st">"-c"</span>, <span class="st">"alembic upgrade head &amp;&amp; python -m app.db.seed"</span>]</code></pre>
+        </div>
+        <ul>
+          <li><strong>¿Por qué un Job y no el entrypoint?</strong> Con 2+ réplicas, si cada pod
+            corriera las migraciones al arrancar, competirían entre sí. El Job las corre
+            <strong>una sola vez</strong>, antes de actualizar los Deployments.</li>
+          <li><strong>Native sidecar en un Job</strong>: el proxy va como <code>initContainer</code>
+            con <code>restartPolicy: Always</code>. Así arranca primero, acompaña a la migración
+            y k8s lo termina cuando el contenedor <code>migrate</code> finaliza (si fuera un
+            container normal, el Job nunca "terminaría" porque el proxy no se apaga solo).</li>
+        </ul>
+      </section>
+
+      <section id="empezar">
+        <h2>Empezar HOY — gratis y local</h2>
+        <div class="box tip">
+          <p><span class="t">No necesitás GCP para aprender k8s.</span> GKE cuesta plata, pero
+          podés correr un cluster real <strong>en tu máquina, gratis</strong>, con
+          <strong>kind</strong> (Kubernetes-in-Docker) o <strong>minikube</strong>. Los mismos
+          manifests, los mismos <code>kubectl</code>. Es la mejor forma de practicar para una
+          entrevista.</p>
+        </div>
+        <div class="code">
+          <div class="filename">cluster local con kind (necesita Docker)</div>
+<pre><code>kind create cluster --name chambapp      <span class="cm"># crea un cluster local en segundos</span>
+kubectl apply -f infra/k8s/01-namespace.yaml
+kubectl get nodes                        <span class="cm"># tu "cluster" de 1 nodo</span></code></pre>
+        </div>
+        <p>Para practicar con chambapp localmente sin Cloud SQL, podrías agregar un Deployment de
+          Postgres en el cluster y apuntar <code>DATABASE_URL</code> ahí (en vez del proxy).
+          El resto (Deployments, Service, HPA, Job) funciona igual.</p>
+        <div class="box ojo">
+          <p><span class="t">Diferencia local vs GKE:</span> el <code>Ingress</code> tipo GCE y
+          el Cloud SQL Auth Proxy son específicos de GCP. En local se usa el Ingress de nginx y
+          un Postgres en el cluster. La <em>lógica</em> de los manifests es la misma — eso es lo
+          que se estudia.</p>
+        </div>
+      </section>
+
+      <section id="kubectl">
+        <h2>kubectl de bolsillo</h2>
+        <p><code>kubectl</code> es <em>el</em> comando para hablar con un cluster. Los que más
+          vas a usar:</p>
+        <div class="code">
+          <div class="filename">comandos esenciales</div>
+<pre><code>kubectl apply -f archivo.yaml          <span class="cm"># crear/actualizar recursos (declarativo)</span>
+kubectl -n chambapp get pods           <span class="cm"># listar pods del namespace</span>
+kubectl -n chambapp get deploy,svc,ingress,hpa   <span class="cm"># panorama general</span>
+kubectl -n chambapp logs deploy/chambapp-api -c api   <span class="cm"># ver logs de un contenedor</span>
+kubectl -n chambapp describe pod &lt;pod&gt; <span class="cm"># diagnóstico detallado (eventos, estados)</span>
+kubectl -n chambapp rollout restart deploy/chambapp-api  <span class="cm"># redeploy</span>
+kubectl -n chambapp scale deploy/chambapp-web --replicas=3  <span class="cm"># escalar a mano</span>
+kubectl -n chambapp exec -it &lt;pod&gt; -- sh   <span class="cm"># entrar a un contenedor</span></code></pre>
+        </div>
+        <div class="box tip">
+          <p><span class="t">El flujo mental al debuggear:</span> <code>get pods</code> (¿están
+          corriendo?) → si uno está <code>CrashLoopBackOff</code> o <code>Pending</code>,
+          <code>describe pod</code> (¿qué evento falló?) → <code>logs</code> (¿qué dice la app?).
+          Ese trío resuelve la mayoría de los problemas.</p>
+        </div>
+      </section>
+
+      <section id="repaso">
+        <h2>Repaso de entrevista</h2>
+        <div class="box entrevista">
+          <p><span class="t">«Explicame Pod vs Deployment vs Service.»</span><br>
+          El <strong>Pod</strong> es la unidad que corre tus contenedores (efímera). El
+          <strong>Deployment</strong> mantiene N réplicas de ese pod y gestiona actualizaciones
+          sin downtime. El <strong>Service</strong> les da una IP/nombre estable y balancea
+          tráfico entre los pods vivos.</p>
+        </div>
+        <div class="box entrevista">
+          <p><span class="t">«¿Qué es declarativo en Kubernetes?»</span><br>
+          Describís el estado deseado en YAML y un control loop reconcilia la realidad con esa
+          descripción continuamente. No ordenás acciones; declarás el resultado.</p>
+        </div>
+        <div class="box entrevista">
+          <p><span class="t">«¿Cómo conectás los pods a una base gestionada sin claves?»</span><br>
+          Cloud SQL Auth Proxy como sidecar + Workload Identity: la ServiceAccount de k8s se
+          vincula a una de Google con permiso de Cloud SQL; el proxy usa esa identidad. Cero
+          credenciales en el cluster.</p>
+        </div>
+        <div class="box entrevista">
+          <p><span class="t">«¿Liveness vs readiness probe?»</span><br>
+          <strong>Readiness</strong>: ¿el pod está listo para recibir tráfico? (si no, lo sacan
+          del balanceo). <strong>Liveness</strong>: ¿el pod está sano? (si no, lo reinician).
+          Distintos propósitos, ambos HTTP a <code>/health</code> en este proyecto.</p>
+        </div>
+        <div class="box entrevista">
+          <p><span class="t">«¿Por qué migraciones en un Job y no en el contenedor?»</span><br>
+          Para que corran una sola vez y no en paralelo entre réplicas, evitando condiciones de
+          carrera sobre el esquema. El Job termina; el Deployment sólo sirve tráfico.</p>
+        </div>
+        <p style="margin-top:24px">
+          <a href="fase-4.html">← Fase 4</a> &nbsp;·&nbsp;
+          <a href="index.html">Volver al índice →</a>
+        </p>
+      </section>
+    </main>
+  </div>
+
+  <footer>chambapp · Fase 5 · material de estudio</footer>
+</body>
+</html>

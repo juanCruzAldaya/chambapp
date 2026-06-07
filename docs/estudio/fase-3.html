@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fase 3 · Frontend React · chambapp</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="inner">
+      <a class="brand" href="index.html">chamb<span>app</span> · estudio</a>
+      <nav>
+        <a href="index.html">Inicio</a>
+        <a href="fase-1.html">1 · Fundación</a>
+        <a href="fase-2.html">2 · Backend</a>
+        <a href="fase-3.html" class="active">3 · Frontend</a>
+        <a href="fase-4.html">4 · Cloud Run</a>
+        <a href="fase-5.html">5 · Kubernetes</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="toc">
+      <h4>En esta fase</h4>
+      <a href="#intro">Qué construimos</a>
+      <a href="#react">1. React: componentes y JSX</a>
+      <a href="#hooks">2. Hooks</a>
+      <a href="#ts">3. TypeScript end-to-end</a>
+      <a href="#api">4. Cliente fetch tipado</a>
+      <a href="#context">5. Context de auth</a>
+      <a href="#router">6. Router y rutas protegidas</a>
+      <a href="#pagina">7. Una página real</a>
+      <a href="#tailwind">8. Tailwind v4</a>
+      <a href="#repaso">Repaso de entrevista</a>
+    </aside>
+
+    <main>
+      <h1>Fase 3 — Frontend con React</h1>
+      <p class="subtitle">Una SPA en React 19 + TypeScript + Vite + Tailwind que consume
+        la API de la Fase 2.</p>
+
+      <section id="intro">
+        <div class="lead">
+          El frontend es una <strong>SPA</strong> (Single Page Application): el navegador
+          carga una vez el HTML/JS y, a partir de ahí, React dibuja las vistas y pide datos
+          a la API por <code>fetch</code>. Cubrimos: componentes y hooks, un cliente HTTP
+          tipado, autenticación con Context, ruteo con rutas protegidas, y estilos con Tailwind.
+        </div>
+
+        <div class="box concepto">
+          <p><span class="t">SPA vs multipágina.</span> En una web tradicional, cada click
+          pide una página nueva al servidor. En una SPA, el ruteo ocurre en el navegador
+          (react-router) y sólo se piden <em>datos</em> (JSON) a la API. Resultado: navegación
+          instantánea y una separación limpia front/back.</p>
+        </div>
+      </section>
+
+      <section id="react">
+        <h2>1. React: componentes y JSX</h2>
+        <div class="box concepto">
+          <p><span class="t">Componente.</span> Una función que recibe <em>props</em> y
+          devuelve <em>JSX</em> (HTML con superpoderes). React llama a esa función y, cuando
+          el estado cambia, la <strong>vuelve a llamar</strong> y actualiza sólo lo que
+          cambió en el DOM. Es <em>declarativo</em>: vos describís cómo se ve la UI para un
+          estado dado, no manipulás el DOM a mano.</p>
+        </div>
+
+        <div class="code">
+          <div class="filename">frontend/src/components/ServiceCard.tsx (extracto)</div>
+<pre><code><span class="kw">export function</span> <span class="fn">ServiceCard</span>({ servicio }: { servicio: Servicio }) {
+  <span class="kw">return</span> (
+    <span class="fn">&lt;Link</span> to={<span class="st">`/servicios/${servicio.id}`</span>}<span class="fn">&gt;</span>
+      <span class="fn">&lt;Card&gt;</span>
+        <span class="fn">&lt;p&gt;</span>{servicio.description || <span class="st">"Sin descripción"</span>}<span class="fn">&lt;/p&gt;</span>
+        <span class="fn">&lt;span&gt;</span>{formatRating(servicio.profesional?.calificacion_promedio)}<span class="fn">&lt;/span&gt;</span>
+      <span class="fn">&lt;/Card&gt;</span>
+    <span class="fn">&lt;/Link&gt;</span>
+  );
+}</code></pre>
+        </div>
+        <ul>
+          <li><strong>Props</strong>: <code>{ servicio }</code> es la entrada del componente,
+            tipada con TypeScript (<code>servicio: Servicio</code>).</li>
+          <li><strong><code>{ }</code> en JSX</strong>: incrusta expresiones JavaScript.
+            <code>{servicio.description || "..."}</code> muestra la descripción o un fallback.</li>
+          <li><strong>Composición</strong>: <code>ServiceCard</code> usa <code>Card</code> y
+            <code>Link</code>. La UI se arma combinando componentes chicos y reutilizables.</li>
+          <li><strong><code>?.</code></strong> (optional chaining): si <code>profesional</code>
+            es <code>null</code>, no rompe; devuelve <code>undefined</code>.</li>
+        </ul>
+      </section>
+
+      <section id="hooks">
+        <h2>2. Hooks</h2>
+        <p>Los <em>hooks</em> son funciones que le dan "memoria" y efectos a los componentes.
+          Los cuatro que más usa el proyecto:</p>
+        <table>
+          <tr><th>Hook</th><th>Para qué</th></tr>
+          <tr><td><code>useState</code></td><td>Guardar estado local que, al cambiar, re-renderiza la UI.</td></tr>
+          <tr><td><code>useEffect</code></td><td>Ejecutar "efectos" (pedir datos, suscribirse) después de renderizar.</td></tr>
+          <tr><td><code>useCallback</code></td><td>Memorizar una función para que no se recree en cada render.</td></tr>
+          <tr><td><code>useMemo</code></td><td>Memorizar un cálculo costoso/derivado.</td></tr>
+        </table>
+
+        <div class="code">
+          <div class="filename">patrón "cargar datos al montar"</div>
+<pre><code><span class="kw">const</span> [servicios, setServicios] = useState&lt;Servicio[]&gt;([]);  <span class="cm"># estado</span>
+<span class="kw">const</span> [loading, setLoading] = useState(<span class="kw">true</span>);
+
+useEffect(() =&gt; {                       <span class="cm"># efecto: corre después del 1er render</span>
+  api.searchServicios({})
+    .then(setServicios)
+    .finally(() =&gt; setLoading(<span class="kw">false</span>));
+}, []);                                  <span class="cm"># [] = "una sola vez al montar"</span></code></pre>
+        </div>
+        <ul>
+          <li><strong><code>useState</code></strong> devuelve <code>[valor, setter]</code>.
+            Llamar al setter dispara un re-render con el nuevo valor.</li>
+          <li><strong>Array de dependencias de <code>useEffect</code></strong>:
+            <code>[]</code> ⇒ corre una vez (al montar). Si ponés variables, vuelve a correr
+            cuando esas cambian. Es el origen de muchos bugs si se arma mal.</li>
+          <li><strong>Estado de carga</strong>: el patrón <code>loading</code> permite
+            mostrar un spinner mientras llega la respuesta.</li>
+        </ul>
+
+        <div class="box ojo">
+          <p><span class="t">Trampa clásica de <code>useEffect</code>:</span> si una función
+          se usa adentro y se define en cada render, ponerla en las dependencias causa un
+          loop. Por eso envolvemos esas funciones en <code>useCallback</code> (memorizadas),
+          como en el detalle de servicio del proyecto.</p>
+        </div>
+      </section>
+
+      <section id="ts">
+        <h2>3. TypeScript de punta a punta</h2>
+        <p>Los tipos del frontend <strong>reflejan</strong> los schemas Pydantic del backend.
+          Así el editor te avisa si usás mal un campo.</p>
+        <div class="code">
+          <div class="filename">frontend/src/lib/types.ts (extracto)</div>
+<pre><code><span class="kw">export interface</span> <span class="fn">Servicio</span> {
+  id: <span class="kw">number</span>;
+  description: <span class="kw">string</span> | <span class="kw">null</span>;
+  main_category: <span class="kw">number</span>;
+  created_at: <span class="kw">string</span>;
+  profesional: ProfesionalResumen | <span class="kw">null</span>;
+  <span class="cm">// Decimal del backend llega como string en JSON</span>
+}</code></pre>
+        </div>
+        <div class="box tip">
+          <p><span class="t">Detalle real del proyecto:</span> <code>calificacion_promedio</code>
+          se tipa como <code>string | null</code>, no <code>number</code>. Pydantic serializa
+          <code>Decimal</code> como <strong>string</strong> en JSON (ej. <code>"4.50"</code>).
+          Lo descubrimos haciendo un smoke test con <code>curl</code> antes de codear el front.
+          Tipar distinto te ahorra bugs sutiles.</p>
+        </div>
+      </section>
+
+      <section id="api">
+        <h2>4. Cliente fetch tipado</h2>
+        <p>En vez de esparcir <code>fetch</code> por todos lados, hay <strong>una</strong>
+          capa (<code>lib/api.ts</code>) que centraliza: URL base, el token JWT, los headers,
+          el parseo de errores y el manejo del 401.</p>
+
+        <div class="code">
+          <div class="filename">frontend/src/lib/api.ts (extracto)</div>
+<pre><code><span class="kw">async function</span> <span class="fn">request</span>&lt;T&gt;(path: <span class="kw">string</span>, options = {}): Promise&lt;T&gt; {
+  <span class="kw">const</span> headers: Record&lt;<span class="kw">string</span>, <span class="kw">string</span>&gt; = {};
+  <span class="kw">const</span> token = getToken();
+  <span class="kw">if</span> (token) headers[<span class="st">"Authorization"</span>] = <span class="st">`Bearer ${token}`</span>;  <span class="cm"># agrega el JWT</span>
+  ...
+  <span class="kw">const</span> res = <span class="kw">await</span> fetch(url, { method, headers, body });
+  <span class="kw">if</span> (res.status === <span class="nb">401</span>) {                 <span class="cm"># token vencido/ inválido</span>
+    clearToken();
+    window.dispatchEvent(<span class="kw">new</span> Event(<span class="st">"auth:logout"</span>));  <span class="cm"># avisa al Context</span>
+  }
+  <span class="kw">if</span> (!res.ok) <span class="kw">throw new</span> ApiError(res.status, parseDetail(data));
+  <span class="kw">return</span> data <span class="kw">as</span> T;
+}</code></pre>
+        </div>
+        <ul>
+          <li><strong>Genérico <code>&lt;T&gt;</code></strong>: cada llamada declara qué tipo
+            devuelve (<code>request&lt;Servicio[]&gt;(...)</code>), y TypeScript propaga ese tipo.</li>
+          <li><strong>Token automático</strong>: si hay JWT guardado en
+            <code>localStorage</code>, se agrega el header <code>Authorization</code> solo.</li>
+          <li><strong>401 centralizado</strong>: si el token venció, limpia el storage y
+            emite un evento <code>auth:logout</code> que el Context escucha para deslogear.</li>
+          <li><strong><code>ApiError</code></strong>: errores con <code>status</code> y mensaje
+            legible (parseado del formato de error de FastAPI). Las páginas los muestran.</li>
+        </ul>
+        <div class="box entrevista">
+          <p><span class="t">«¿Dónde guardás el JWT en el front?»</span><br>
+          En este proyecto, <code>localStorage</code> (simple, persiste entre recargas). El
+          trade-off: es accesible por JS, así que es vulnerable a XSS. La alternativa más
+          segura es una cookie <code>httpOnly</code>, a costa de manejar CSRF. Para un
+          portfolio, localStorage es razonable y hay que saber explicar el trade-off.</p>
+        </div>
+      </section>
+
+      <section id="context">
+        <h2>5. Context de autenticación</h2>
+        <div class="box concepto">
+          <p><span class="t">¿Qué es Context?</span> Una forma de compartir estado "global"
+          (acá: el usuario logueado) sin pasarlo por props por toda la jerarquía
+          (<em>prop drilling</em>). Un <code>Provider</code> envuelve la app y cualquier
+          componente lee el valor con un hook.</p>
+        </div>
+        <div class="code">
+          <div class="filename">frontend/src/context/AuthContext.tsx (extracto)</div>
+<pre><code><span class="kw">const</span> login = useCallback(<span class="kw">async</span> (email, password) =&gt; {
+  <span class="kw">const</span> { access_token } = <span class="kw">await</span> api.login(email, password);
+  setToken(access_token);              <span class="cm"># guarda el JWT</span>
+  setUser(<span class="kw">await</span> api.me());           <span class="cm"># trae el perfil</span>
+}, []);
+
+useEffect(() =&gt; {                       <span class="cm"># al cargar la app: si hay token, hidrata el usuario</span>
+  refresh().finally(() =&gt; setLoading(<span class="kw">false</span>));
+  window.addEventListener(<span class="st">"auth:logout"</span>, () =&gt; setUser(<span class="kw">null</span>));
+}, [refresh]);</code></pre>
+        </div>
+        <ul>
+          <li><strong>Hidratación</strong>: al abrir la app, si hay token guardado, pide
+            <code>/usuarios/me</code> para recuperar el usuario. Así seguís logueado tras
+            recargar.</li>
+          <li><strong>Reacciona al 401</strong>: escucha el evento <code>auth:logout</code>
+            que emite el cliente API y limpia el usuario. Logout automático cuando el token
+            muere.</li>
+          <li><strong><code>useAuth()</code></strong>: un hook (<code>useContext</code>)
+            que cualquier componente usa para leer <code>user</code>, <code>login</code>,
+            <code>logout</code>.</li>
+        </ul>
+      </section>
+
+      <section id="router">
+        <h2>6. Router y rutas protegidas</h2>
+        <div class="code">
+          <div class="filename">frontend/src/App.tsx (extracto)</div>
+<pre><code><span class="fn">&lt;Routes&gt;</span>
+  <span class="fn">&lt;Route</span> element={<span class="fn">&lt;Layout /&gt;</span>}<span class="fn">&gt;</span>
+    <span class="cm">{/* públicas */}</span>
+    <span class="fn">&lt;Route</span> path=<span class="st">"/"</span> element={<span class="fn">&lt;HomePage /&gt;</span>} /<span class="fn">&gt;</span>
+    <span class="fn">&lt;Route</span> path=<span class="st">"/servicios/:id"</span> element={<span class="fn">&lt;ServiceDetailPage /&gt;</span>} /<span class="fn">&gt;</span>
+    <span class="cm">{/* protegidas */}</span>
+    <span class="fn">&lt;Route</span> element={<span class="fn">&lt;ProtectedRoute /&gt;</span>}<span class="fn">&gt;</span>
+      <span class="fn">&lt;Route</span> path=<span class="st">"/agenda"</span> element={<span class="fn">&lt;AgendaPage /&gt;</span>} /<span class="fn">&gt;</span>
+      <span class="fn">&lt;Route</span> path=<span class="st">"/contrataciones"</span> element={<span class="fn">&lt;ContractsPage /&gt;</span>} /<span class="fn">&gt;</span>
+    <span class="fn">&lt;/Route&gt;</span>
+  <span class="fn">&lt;/Route&gt;</span>
+<span class="fn">&lt;/Routes&gt;</span></code></pre>
+        </div>
+        <div class="code">
+          <div class="filename">frontend/src/components/ProtectedRoute.tsx</div>
+<pre><code><span class="kw">export function</span> <span class="fn">ProtectedRoute</span>() {
+  <span class="kw">const</span> { user, loading } = useAuth();
+  <span class="kw">if</span> (loading) <span class="kw">return</span> <span class="fn">&lt;Spinner /&gt;</span>;
+  <span class="kw">if</span> (!user) <span class="kw">return</span> <span class="fn">&lt;Navigate</span> to=<span class="st">"/login"</span> replace /<span class="fn">&gt;</span>;  <span class="cm"># redirige si no hay sesión</span>
+  <span class="kw">return</span> <span class="fn">&lt;Outlet /&gt;</span>;                              <span class="cm"># renderiza la ruta hija</span>
+}</code></pre>
+        </div>
+        <ul>
+          <li><strong>Rutas anidadas</strong>: <code>Layout</code> (navbar + footer) envuelve
+            todo vía <code>&lt;Outlet/&gt;</code>; las páginas se renderizan adentro.</li>
+          <li><strong><code>:id</code></strong>: parámetro de URL; la página lo lee con
+            <code>useParams()</code>.</li>
+          <li><strong>Guardia</strong>: <code>ProtectedRoute</code> verifica la sesión. Sin
+            usuario ⇒ redirige a <code>/login</code>. Las rutas hijas no se renderizan jamás
+            sin auth.</li>
+        </ul>
+        <div class="box ojo">
+          <p><span class="t">La guardia del front es UX, no seguridad.</span> Evita mostrar
+          pantallas sin sentido, pero <strong>la seguridad real está en el backend</strong>
+          (cada endpoint valida el JWT). Nunca confíes sólo en el front para proteger datos.</p>
+        </div>
+      </section>
+
+      <section id="pagina">
+        <h2>7. Una página real: detalle + contratar</h2>
+        <p>La página de detalle del servicio junta todo: carga el servicio, sus reseñas y la
+          disponibilidad del profesional <em>en paralelo</em>, y arma el formulario para
+          contratar un turno.</p>
+        <div class="code">
+          <div class="filename">frontend/src/pages/ServiceDetailPage.tsx (extracto)</div>
+<pre><code><span class="kw">const</span> serv = <span class="kw">await</span> api.getServicio(servicioId);
+<span class="kw">const</span> [revs, cals] = <span class="kw">await</span> Promise.all([      <span class="cm"># 2 requests en paralelo</span>
+  api.listResenas(servicioId),
+  api.getCalendariosDeUsuario(serv.profesional_id),
+]);
+
+<span class="kw">const</span> slots = useMemo(() =&gt;                    <span class="cm"># turnos disponibles, derivados</span>
+  disponibilidad.flatMap(cal =&gt;
+    cal.eventos.filter(e =&gt; e.estado === <span class="st">"disponible"</span>)
+      .map(e =&gt; ({ ...e, calendario_id: cal.id }))),
+  [disponibilidad]);</code></pre>
+        </div>
+        <ul>
+          <li><strong><code>Promise.all</code></strong>: lanza dos llamadas a la vez y espera
+            ambas. Más rápido que encadenarlas.</li>
+          <li><strong><code>useMemo</code></strong>: la lista de turnos se <em>deriva</em> de
+            la disponibilidad; se recalcula sólo si cambia, no en cada render.</li>
+          <li>Si el usuario es el dueño, no ve "contratar" sino una nota; si no está logueado,
+            ve un CTA para ingresar. La UI <strong>reacciona al estado de auth</strong>.</li>
+        </ul>
+      </section>
+
+      <section id="tailwind">
+        <h2>8. Tailwind v4</h2>
+        <div class="box concepto">
+          <p><span class="t">Utility-first CSS.</span> En vez de escribir CSS aparte, componés
+          estilos con clases chiquitas directo en el JSX: <code>className="flex items-center
+          gap-2 rounded-lg"</code>. Ventaja: no inventás nombres de clases, no hay CSS muerto,
+          y el diseño vive junto al markup.</p>
+        </div>
+        <div class="code">
+          <div class="filename">Tailwind v4: setup mínimo</div>
+<pre><code><span class="cm">// vite.config.ts — plugin oficial, sin archivo de config</span>
+plugins: [react(), tailwindcss()]
+
+<span class="cm">/* index.css — una línea */</span>
+<span class="nb">@import</span> <span class="st">"tailwindcss"</span>;</code></pre>
+        </div>
+        <ul>
+          <li><strong>v4</strong> simplificó todo: se activa con el plugin de Vite y un
+            <code>@import</code>. Sin <code>tailwind.config.js</code> obligatorio.</li>
+          <li><strong>Tema</strong>: definimos colores de marca con <code>@theme</code> y los
+            usamos como <code>bg-marca-600</code>.</li>
+          <li><strong>Build</strong>: Tailwind escanea el código y genera <em>sólo</em> las
+            clases usadas ⇒ CSS final chico (~20 KB en este proyecto).</li>
+        </ul>
+      </section>
+
+      <section id="repaso">
+        <h2>Repaso de entrevista</h2>
+        <div class="box entrevista">
+          <p><span class="t">«¿Qué es el array de dependencias de useEffect?»</span><br>
+          La lista de valores que, al cambiar, hacen que el efecto vuelva a correr.
+          <code>[]</code> = sólo al montar. Omitirlo = en cada render. Mal armado, causa
+          loops o datos viejos (stale closures).</p>
+        </div>
+        <div class="box entrevista">
+          <p><span class="t">«¿Cómo manejás la sesión en una SPA?»</span><br>
+          JWT en localStorage + un Context que hidrata el usuario al cargar y escucha 401 para
+          deslogear. Las rutas privadas usan una guardia, pero la autorización real la impone
+          el backend.</p>
+        </div>
+        <div class="box entrevista">
+          <p><span class="t">«¿Por qué un cliente API centralizado?»</span><br>
+          Para no repetir lógica de headers/errores/auth, tener tipos en un solo lugar y poder
+          cambiar el manejo de 401 o la URL base sin tocar cada componente.</p>
+        </div>
+        <p style="margin-top:24px">
+          <a href="fase-2.html">← Fase 2</a> &nbsp;·&nbsp;
+          <a href="fase-4.html">Siguiente: Fase 4 — Docker & Cloud Run →</a>
+        </p>
+      </section>
+    </main>
+  </div>
+
+  <footer>chambapp · Fase 3 · material de estudio</footer>
+</body>
+</html>

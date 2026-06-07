@@ -97,11 +97,27 @@ docker-compose.yml   local: postgres + api
       servicios, detalle + contratar, publicar, agenda, contrataciones, perfil
 - [x] **Fase 4 — Cloud Run**: Dockerfiles (API + frontend nginx), Cloud SQL,
       Artifact Registry, Secret Manager, CI/CD (Cloud Build + GitHub Actions)
-- [ ] **Fase 5 — GKE (estudio)**: manifests Deployment/Service/Ingress, HPA
+- [x] **Fase 5 — GKE (estudio)**: manifests en `infra/k8s/` (Deployment + sidecar
+      Cloud SQL proxy, Service, Ingress, HPA, Job de migración, Workload Identity)
+      + scripts (`setup-cluster.sh`, `deploy.sh`). NO desplegado (GKE tiene costo).
 
-**Próximo paso sugerido:** Fase 5 — **GKE**: trasladar lo de Cloud Run a Kubernetes
-(Deployments + Services + Ingress + HPA) como ejercicio de estudio. El backend ya
-está listo (imagen, migraciones por entrypoint, config por env/secrets).
+**Proyecto completo.** Las 5 fases están hechas. Material de estudio en
+`docs/estudio/` (un HTML por fase, autocontenido, foco en backend + front + infra).
+
+### Infra Fase 5 (`infra/k8s/`)
+
+- **No se desplegó** a propósito: GKE no tiene free tier (cluster + Cloud SQL +
+  Load Balancer cuestan). Queda listo para aplicar con `setup-cluster.sh` + `deploy.sh`.
+- Cloud SQL por **sidecar** (Cloud SQL Auth Proxy) + **Workload Identity** (sin claves).
+- **Ingress** único con routing por path (`/api/*`→api, resto→web) ⇒ mismo origen,
+  sin CORS; el frontend se buildea con `VITE_API_URL=/api/v1`.
+- Migraciones en un **Job** (no en cada réplica); HPA por CPU.
+
+### Material de estudio (`docs/estudio/`)
+
+- `index.html` + `fase-1..5.html` + `styles.css`. HTMLs autocontenidos (se abren con
+  doble clic, sin internet), con recuadros de concepto/tip/ojo/entrevista. Pensados
+  para estudiar a fondo y para defender el proyecto en entrevistas.
 
 ### Infra Fase 4 (`infra/cloudrun/`)
 

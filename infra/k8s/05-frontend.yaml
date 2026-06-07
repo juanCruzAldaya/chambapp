@@ -1,0 +1,53 @@
+# Frontend (SPA + nginx). En GKE el Ingress enruta /api al backend, así que
+# la SPA se construye con VITE_API_URL=/api/v1 (mismo origen, sin CORS).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chambapp-web
+  namespace: chambapp
+  labels:
+    app: chambapp-web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: chambapp-web
+  template:
+    metadata:
+      labels:
+        app: chambapp-web
+    spec:
+      containers:
+        - name: web
+          image: ${WEB_IMAGE}
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chambapp-web
+  namespace: chambapp
+spec:
+  type: ClusterIP
+  selector:
+    app: chambapp-web
+  ports:
+    - port: 80
+      targetPort: 8080

@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fase 4 · Docker & Cloud Run · chambapp</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="inner">
+      <a class="brand" href="index.html">chamb<span>app</span> · estudio</a>
+      <nav>
+        <a href="index.html">Inicio</a>
+        <a href="fase-1.html">1 · Fundación</a>
+        <a href="fase-2.html">2 · Backend</a>
+        <a href="fase-3.html">3 · Frontend</a>
+        <a href="fase-4.html" class="active">4 · Cloud Run</a>
+        <a href="fase-5.html">5 · Kubernetes</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="toc">
+      <h4>En esta fase</h4>
+      <a href="#intro">Qué construimos</a>
+      <a href="#docker">1. Docker</a>
+      <a href="#backimg" class="sub">Imagen del backend</a>
+      <a href="#frontimg" class="sub">Imagen del frontend</a>
+      <a href="#cloudrun">2. Cloud Run</a>
+      <a href="#cloudsql">3. Cloud SQL</a>
+      <a href="#secrets">4. Secret Manager</a>
+      <a href="#ar">5. Artifact Registry</a>
+      <a href="#cicd">6. CI/CD</a>
+      <a href="#repaso">Repaso de entrevista</a>
+    </aside>
+
+    <main>
+      <h1>Fase 4 — Docker & Cloud Run</h1>
+      <p class="subtitle">Empaquetar en contenedores y desplegar serverless en GCP, con
+        base gestionada, secretos y CI/CD.</p>
+
+      <section id="intro">
+        <div class="lead">
+          Pasamos de "corre en mi máquina" a "corre en la nube". Empaquetamos backend y
+          frontend en <strong>imágenes Docker</strong>, las publicamos en
+          <strong>Artifact Registry</strong> y las desplegamos en <strong>Cloud Run</strong>
+          (serverless), con la base en <strong>Cloud SQL</strong>, los secretos en
+          <strong>Secret Manager</strong> y despliegues automáticos con <strong>CI/CD</strong>.
+        </div>
+        <div class="flow">navegador ──► chambapp-web (nginx SPA) ──CORS──► chambapp-api (FastAPI) ──socket──► Cloud SQL
+                    ▲                                   ▲
+              Artifact Registry  ◄── Cloud Build ──►  Secret Manager</div>
+      </section>
+
+      <section id="docker">
+        <h2>1. Docker</h2>
+        <div class="box concepto">
+          <p><span class="t">¿Qué es un contenedor?</span> Un paquete que incluye tu app
+          <em>y</em> todo lo que necesita (runtime, librerías, sistema base) para correr igual
+          en cualquier máquina. A diferencia de una VM, no lleva un SO completo: comparte el
+          kernel del host, así que es liviano y arranca en segundos. La <strong>imagen</strong>
+          es la receta inmutable; el <strong>contenedor</strong> es una instancia corriendo.</p>
+        </div>
+
+        <h3 id="backimg">Imagen del backend (con migraciones al arrancar)</h3>
+        <div class="code">
+          <div class="filename">backend/entrypoint.sh</div>
+<pre><code><span class="cm">#!/bin/sh</span>
+<span class="kw">set</span> -e
+<span class="kw">if</span> [ <span class="st">"${RUN_MIGRATIONS:-true}"</span> = <span class="st">"true"</span> ]; <span class="kw">then</span>
+  alembic upgrade head            <span class="cm"># aplica migraciones antes de servir</span>
+<span class="kw">fi</span>
+<span class="kw">exec</span> uvicorn app.main:app --host 0.0.0.0 --port <span class="st">"${PORT:-8080}"</span></code></pre>
+        </div>
+        <ul>
+          <li><strong><code>entrypoint.sh</code></strong>: en prod, antes de levantar el
+            servidor, corre <code>alembic upgrade head</code>. Así el esquema siempre está al
+            día. (Se puede apagar con <code>RUN_MIGRATIONS=false</code> — útil cuando las
+            migra un Job aparte, como en GKE.)</li>
+          <li><strong><code>$PORT</code></strong>: Cloud Run <em>inyecta</em> el puerto por
+            variable de entorno; el contenedor debe escuchar ahí. Por eso no hardcodeamos 8080.</li>
+          <li><strong>Usuario no-root</strong>: el Dockerfile crea un usuario sin privilegios
+            (<code>appuser</code>). Si alguien compromete el proceso, no es root. Buena práctica.</li>
+        </ul>
+
+        <h3 id="frontimg">Imagen del frontend (build multi-stage)</h3>
+        <div class="code">
+          <div class="filename">frontend/Dockerfile (idea)</div>
+<pre><code><span class="cm"># Etapa 1: build con Node</span>
+<span class="kw">FROM</span> node:22-alpine <span class="kw">AS</span> build
+COPY package*.json ./
+<span class="kw">RUN</span> npm ci
+COPY . .
+<span class="kw">ARG</span> VITE_API_URL=/api/v1
+<span class="kw">RUN</span> echo <span class="st">"VITE_API_URL=$VITE_API_URL"</span> &gt; .env.production &amp;&amp; npm run build
+
+<span class="cm"># Etapa 2: servir estático con nginx (imagen final chiquita)</span>
+<span class="kw">FROM</span> nginx:1.27-alpine
+COPY --from=build /app/dist /usr/share/nginx/html
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template</code></pre>
+        </div>
+        <div class="box concepto">
+          <p><span class="t">Build multi-stage.</span> La etapa 1 usa Node (pesado: ~400 MB con
+          node_modules) sólo para compilar. La etapa 2 se queda <em>únicamente</em> con el
+          resultado (<code>dist/</code>) servido por nginx. La imagen final no lleva Node ni
+          node_modules ⇒ chica, rápida y con menos superficie de ataque.</p>
+        </div>
+        <ul>
+          <li><strong><code>VITE_API_URL</code> se hornea en build</strong>: Vite reemplaza
+            <code>import.meta.env.VITE_API_URL</code> por su valor al compilar. En Cloud Run
+            apunta a la URL de la API; en GKE es <code>/api/v1</code> (mismo origen).</li>
+          <li><strong>nginx + <code>$PORT</code></strong>: la imagen oficial sustituye
+            <code>${PORT}</code> en su config al arrancar (envsubst), así nginx escucha el
+            puerto que Cloud Run le pide.</li>
+        </ul>
+      </section>
+
+      <section id="cloudrun">
+        <h2>2. Cloud Run</h2>
+        <div class="box concepto">
+          <p><span class="t">¿Qué es Cloud Run?</span> Un servicio <em>serverless</em> para
+          contenedores: le das una imagen y Google la corre, la escala automáticamente
+          (incluso a <strong>cero</strong> si no hay tráfico) y te cobra por uso. No gestionás
+          servidores. Ideal para APIs y webs con tráfico variable.</p>
+        </div>
+        <div class="code">
+          <div class="filename">deploy de la API (extracto de deploy-backend.sh)</div>
+<pre><code>gcloud run deploy chambapp-api \
+  --image=$IMAGE \
+  --region=$REGION \
+  --allow-unauthenticated \
+  --add-cloudsql-instances=$INSTANCE_CONNECTION_NAME \
+  --set-env-vars=ENVIRONMENT=production \
+  --set-secrets=DATABASE_URL=DATABASE_URL:latest,SECRET_KEY=SECRET_KEY:latest</code></pre>
+        </div>
+        <ul>
+          <li><strong>Escala a cero</strong>: si nadie usa la app, no hay instancias y no
+            pagás cómputo. Por eso Cloud Run es prácticamente gratis para un portfolio.</li>
+          <li><strong><code>--set-secrets</code></strong>: inyecta secretos desde Secret
+            Manager como variables de entorno. El secreto nunca está en la imagen ni en el repo.</li>
+          <li><strong><code>--add-cloudsql-instances</code></strong>: monta la conexión segura
+            a Cloud SQL (ver abajo).</li>
+        </ul>
+        <div class="box ojo">
+          <p><span class="t">Cold starts.</span> El precio de escalar a cero: la primera
+          request tras un rato "despierta" una instancia y tarda un poco más. Se mitiga con
+          <em>min-instances ≥ 1</em> (a costa de pagar siempre). Trade-off clásico de serverless.</p>
+        </div>
+      </section>
+
+      <section id="cloudsql">
+        <h2>3. Cloud SQL</h2>
+        <div class="box concepto">
+          <p><span class="t">Base gestionada.</span> Cloud SQL es Postgres administrado por
+          Google: backups, parches, alta disponibilidad y réplicas sin que vos administres el
+          servidor. Vos te ocupás del esquema y los datos; la infraestructura la maneja GCP.</p>
+        </div>
+        <p>La conexión usa un <strong>unix socket</strong> seguro en vez de exponer la base a
+          internet:</p>
+        <div class="code">
+          <div class="filename">DATABASE_URL para Cloud Run + Cloud SQL</div>
+<pre><code>postgresql+psycopg2://USER:PASS@/chambappdb?host=/cloudsql/PROYECTO:REGION:INSTANCIA</code></pre>
+        </div>
+        <ul>
+          <li><strong>Sin IP pública expuesta</strong>: Cloud Run habla con Cloud SQL por un
+            socket interno (<code>/cloudsql/...</code>), no por una IP abierta a internet.
+            Más seguro.</li>
+          <li><strong>Mismo código, distinta URL</strong>: la app no cambia; sólo cambia
+            <code>DATABASE_URL</code> (en local apunta a localhost, en prod al socket). Es el
+            pago de haber hecho config 12-factor en la Fase 1.</li>
+        </ul>
+      </section>
+
+      <section id="secrets">
+        <h2>4. Secret Manager</h2>
+        <div class="box concepto">
+          <p><span class="t">¿Por qué no env vars normales?</span> Las variables de entorno
+          comunes quedan visibles en la config del servicio y en logs. <strong>Secret Manager</strong>
+          guarda los valores cifrados, versionados y con control de acceso (IAM). Sólo la
+          service account autorizada los lee, en tiempo de ejecución.</p>
+        </div>
+        <div class="code">
+          <div class="filename">crear secretos (setup.sh)</div>
+<pre><code>printf <span class="st">'%s'</span> <span class="st">"$DATABASE_URL"</span> | gcloud secrets create DATABASE_URL --data-file=-
+gcloud secrets create SECRET_KEY --data-file=- &lt;&lt;&lt; <span class="st">"$(openssl rand -hex 32)"</span>
+<span class="cm"># y se le da acceso a la service account de Cloud Run:</span>
+gcloud projects add-iam-policy-binding $PROJECT \
+  --member="serviceAccount:$RUNTIME_SA" --role=roles/secretmanager.secretAccessor</code></pre>
+        </div>
+        <p>Esto cierra el círculo del aprendizaje de la Fase 1: <strong>el repo no tiene ni un
+          secreto</strong>. Sólo <code>.env.example</code> con placeholders.</p>
+      </section>
+
+      <section id="ar">
+        <h2>5. Artifact Registry</h2>
+        <div class="box concepto">
+          <p><span class="t">Registro de imágenes.</span> Es el "GitHub de las imágenes Docker":
+          donde se publican (<code>push</code>) las imágenes versionadas para que Cloud Run (o
+          GKE) las descarguen. Cada imagen se etiqueta, típicamente con el hash del commit, para
+          saber exactamente qué versión está corriendo.</p>
+        </div>
+        <div class="code">
+          <div class="filename">ruta de una imagen</div>
+<pre><code>us-central1-docker.pkg.dev/PROYECTO/chambapp/chambapp-api:9e9c6e8
+└── región ──────────────┘ └proyecto┘ └repo──┘ └servicio─┘ └tag (commit)┘</code></pre>
+        </div>
+      </section>
+
+      <section id="cicd">
+        <h2>6. CI/CD</h2>
+        <div class="box concepto">
+          <p><span class="t">CI vs CD.</span> <strong>CI</strong> (Integración Continua):
+          en cada push/PR se corren tests y linters automáticamente, para detectar errores
+          temprano. <strong>CD</strong> (Despliegue Continuo): si CI pasa, se construye y
+          despliega solo. Menos errores humanos, despliegues repetibles.</p>
+        </div>
+
+        <h4>CI — GitHub Actions (siempre activo)</h4>
+        <div class="code">
+          <div class="filename">.github/workflows/ci.yml (extracto)</div>
+<pre><code>jobs:
+  backend:
+    steps:
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check app tests alembic    <span class="cm"># lint</span>
+      - run: pytest                           <span class="cm"># 30 tests</span>
+  frontend:
+    steps:
+      - run: npm ci
+      - run: npm run build                    <span class="cm"># typecheck + build</span></code></pre>
+        </div>
+
+        <h4>CD — Cloud Build + Workload Identity Federation</h4>
+        <div class="code">
+          <div class="filename">.github/workflows/deploy.yml (extracto)</div>
+<pre><code>- uses: google-github-actions/auth@v2
+  with:
+    workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+    service_account: ${{ secrets.GCP_DEPLOY_SA }}
+- run: gcloud builds submit --config infra/cloudrun/cloudbuild.yaml ...</code></pre>
+        </div>
+        <div class="box tip">
+          <p><span class="t">Workload Identity Federation (WIF).</span> Permite que GitHub
+          Actions se autentique en GCP <strong>sin una clave de service account</strong> (sin
+          archivos JSON que se puedan filtrar). GitHub presenta un token OIDC que GCP confía
+          según reglas (sólo este repo). Es la forma moderna y segura de hacer CD.</p>
+        </div>
+        <div class="box entrevista">
+          <p><span class="t">«¿Cómo evitás claves de service account en CI?»</span><br>
+          Con Workload Identity Federation: el pipeline se autentica vía OIDC y "impersona" una
+          service account con permisos acotados, sin guardar claves estáticas. Si se filtra el
+          repo, no hay credencial que robar.</p>
+        </div>
+      </section>
+
+      <section id="repaso">
+        <h2>Repaso de entrevista</h2>
+        <div class="box entrevista">
+          <p><span class="t">«¿Contenedor vs máquina virtual?»</span><br>
+          La VM virtualiza hardware y lleva un SO completo; el contenedor comparte el kernel del
+          host y sólo empaqueta la app y sus dependencias. Resultado: arranca en segundos, pesa
+          poco y es portable.</p>
+        </div>
+        <div class="box entrevista">
+          <p><span class="t">«¿Por qué Cloud Run para este proyecto?»</span><br>
+          Serverless, escala a cero (casi gratis con poco tráfico), despliegue de una imagen sin
+          gestionar servidores. Perfecto para un portfolio o un MVP de tráfico variable.</p>
+        </div>
+        <div class="box entrevista">
+          <p><span class="t">«¿Cómo manejás migraciones en el deploy?»</span><br>
+          El <code>entrypoint</code> corre <code>alembic upgrade head</code> antes de servir. En
+          arquitecturas con muchas réplicas, se desacopla en un job/step separado para que no
+          corran en paralelo.</p>
+        </div>
+        <p style="margin-top:24px">
+          <a href="fase-3.html">← Fase 3</a> &nbsp;·&nbsp;
+          <a href="fase-5.html">Siguiente: Fase 5 — Kubernetes →</a>
+        </p>
+      </section>
+    </main>
+  </div>
+
+  <footer>chambapp · Fase 4 · material de estudio</footer>
+</body>
+</html>

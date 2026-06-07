@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fase 1 · Fundación del backend · chambapp</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="inner">
+      <a class="brand" href="index.html">chamb<span>app</span> · estudio</a>
+      <nav>
+        <a href="index.html">Inicio</a>
+        <a href="fase-1.html" class="active">1 · Fundación</a>
+        <a href="fase-2.html">2 · Backend</a>
+        <a href="fase-3.html">3 · Frontend</a>
+        <a href="fase-4.html">4 · Cloud Run</a>
+        <a href="fase-5.html">5 · Kubernetes</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="toc">
+      <h4>En esta fase</h4>
+      <a href="#intro">Qué construimos</a>
+      <a href="#orm">1. ORM y SQLAlchemy 2.0</a>
+      <a href="#modelos" class="sub">Modelos y columnas</a>
+      <a href="#relaciones" class="sub">Relaciones</a>
+      <a href="#config">2. Configuración (12-factor)</a>
+      <a href="#engine">3. Engine, Session, get_db</a>
+      <a href="#security">4. Seguridad: JWT + bcrypt</a>
+      <a href="#deps">5. Dependencias (DI)</a>
+      <a href="#factory">6. App factory + lifespan</a>
+      <a href="#docker">7. Docker base</a>
+      <a href="#repaso">Repaso de entrevista</a>
+    </aside>
+
+    <main>
+      <h1>Fase 1 — Fundación del backend</h1>
+      <p class="subtitle">El esqueleto sobre el que se construye todo: ORM, modelos,
+        configuración, seguridad y contenedor.</p>
+
+      <section id="intro">
+        <div class="lead">
+          En esta fase no hay endpoints todavía. Construimos el <strong>núcleo</strong>:
+          cómo hablamos con la base (ORM), cómo modelamos el dominio (10 tablas),
+          cómo leemos la configuración sin hardcodear secretos, cómo firmamos
+          tokens y cómo se empaqueta todo en Docker. Es la base que la Fase 2
+          va a usar para exponer la API.
+        </div>
+
+        <h3>El stack y el porqué</h3>
+        <table>
+          <tr><th>Pieza</th><th>Elección</th><th>Por qué</th></tr>
+          <tr><td>Framework</td><td>FastAPI</td><td>Async, validación automática con Pydantic, genera OpenAPI/Swagger solo, tipado.</td></tr>
+          <tr><td>ORM</td><td>SQLAlchemy 2.0</td><td>El estándar de Python; estilo nuevo <code>Mapped[]</code> con tipos reales.</td></tr>
+          <tr><td>Base</td><td>PostgreSQL</td><td>Relacional robusta; misma en local (Docker) y prod (Cloud SQL).</td></tr>
+          <tr><td>Auth</td><td>JWT + bcrypt</td><td>Stateless (no sesión en servidor) + hashing seguro de contraseñas.</td></tr>
+          <tr><td>Validación/Config</td><td>Pydantic v2</td><td>Un solo sistema para validar requests y para leer settings.</td></tr>
+        </table>
+
+        <div class="box ojo">
+          <p><span class="t">Aprendizaje del proyecto original.</span> La versión 2024
+          usaba SQL crudo con f-strings (inyectable), credenciales hardcodeadas y
+          devolvía el hash del password al cliente. Toda la Fase 1 está pensada para
+          <em>no</em> repetir esos errores: ORM en vez de SQL a mano, secretos por
+          entorno, y nunca exponer el password.</p>
+        </div>
+      </section>
+
+      <section id="orm">
+        <h2>1. ORM y SQLAlchemy 2.0</h2>
+
+        <div class="box concepto">
+          <p><span class="t">¿Qué es un ORM?</span> Object-Relational Mapping: una
+          capa que traduce <strong>filas de tablas ↔ objetos de Python</strong>. En
+          vez de escribir <code>SELECT * FROM usuarios WHERE id = 1</code> y parsear
+          tuplas a mano, hacés <code>db.get(Usuario, 1)</code> y recibís un objeto
+          <code>Usuario</code>. El ORM genera el SQL por vos, evita inyección
+          (parametriza siempre) y te da tipos.</p>
+        </div>
+
+        <h3 id="modelos">Modelos y columnas (estilo <code>Mapped</code>)</h3>
+        <p>SQLAlchemy 2.0 introdujo una sintaxis declarativa basada en
+          <em>type hints</em>. Cada modelo es una clase que hereda de una
+          <code>Base</code> declarativa; cada atributo es un <code>Mapped[tipo]</code>
+          mapeado a una columna con <code>mapped_column()</code>.</p>
+
+        <div class="code">
+          <div class="filename">backend/app/models/user.py (extracto)</div>
+<pre><code><span class="kw">class</span> <span class="fn">Usuario</span>(Base):
+    __tablename__ = <span class="st">"usuarios"</span>
+
+    id: Mapped[<span class="kw">int</span>] = mapped_column(primary_key=<span class="kw">True</span>)
+    email: Mapped[<span class="kw">str</span>] = mapped_column(String(<span class="nb">255</span>), unique=<span class="kw">True</span>, index=<span class="kw">True</span>)
+    password: Mapped[<span class="kw">str</span>] = mapped_column(String(<span class="nb">255</span>))  <span class="cm"># hash bcrypt</span>
+    nombre: Mapped[<span class="kw">str</span> | <span class="kw">None</span>] = mapped_column(String(<span class="nb">100</span>))
+    calificacion_promedio: Mapped[Decimal | <span class="kw">None</span>] = mapped_column(Numeric(<span class="nb">3</span>, <span class="nb">2</span>))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=<span class="kw">True</span>), server_default=func.now()
+    )</code></pre>
+        </div>
+
+        <p>Puntos clave de ese fragmento:</p>
+        <ul>
+          <li><strong><code>Mapped[int]</code></strong> vs <strong><code>Mapped[str | None]</code></strong>:
+            el tipo le dice a SQLAlchemy (y a tu editor) si la columna es
+            <code>NOT NULL</code> o nullable. <code>str | None</code> ⇒ permite NULL.</li>
+          <li><strong><code>String(255)</code>, <code>Numeric(3, 2)</code></strong>:
+            el tipo de la columna en la base. <code>Numeric(3,2)</code> = hasta 3
+            dígitos, 2 decimales (ej. <code>4.75</code>) — ideal para una calificación.</li>
+          <li><strong><code>unique=True, index=True</code></strong> en email: no se
+            repite y se busca rápido (login por email).</li>
+          <li><strong><code>server_default=func.now()</code></strong>: el valor por
+            defecto lo pone <em>la base</em> (no Python). Más confiable para timestamps.</li>
+        </ul>
+
+        <div class="box tip">
+          <p><span class="t">Detalle fino:</span> el campo se llama <code>password</code>
+          pero guarda el <em>hash</em>, nunca la contraseña en texto. El comentario lo
+          aclara. En la Fase 2 el schema de respuesta directamente no incluye este campo.</p>
+        </div>
+
+        <h3 id="relaciones">Relaciones entre tablas</h3>
+        <p>El dominio tiene 10 tablas conectadas. Un <code>Usuario</code> es a la vez
+          <strong>cliente</strong> (contrata, reseña) y <strong>profesional</strong>
+          (publica servicios, tiene agenda). Eso se modela con <code>relationship()</code>.</p>
+
+        <div class="code">
+          <div class="filename">relación uno-a-muchos: Usuario → Servicios</div>
+<pre><code><span class="cm"># En Usuario (lado "uno"):</span>
+servicios: Mapped[<span class="kw">list</span>[Servicio]] = relationship(
+    back_populates=<span class="st">"profesional"</span>,
+    foreign_keys=<span class="st">"Servicio.profesional_id"</span>,
+    cascade=<span class="st">"all, delete-orphan"</span>,
+)
+
+<span class="cm"># En Servicio (lado "muchos"):</span>
+profesional_id: Mapped[<span class="kw">int</span>] = mapped_column(ForeignKey(<span class="st">"usuarios.id"</span>))
+profesional: Mapped[Usuario] = relationship(
+    back_populates=<span class="st">"servicios"</span>, foreign_keys=[profesional_id]
+)</code></pre>
+        </div>
+
+        <ul>
+          <li><strong><code>ForeignKey("usuarios.id")</code></strong> es la columna real
+            en la base (la restricción). <strong><code>relationship()</code></strong> es
+            la comodidad de Python: te deja navegar <code>servicio.profesional</code> o
+            <code>usuario.servicios</code> sin escribir el JOIN.</li>
+          <li><strong><code>back_populates</code></strong> conecta los dos lados: si
+            agregás un servicio a <code>usuario.servicios</code>, automáticamente
+            <code>servicio.profesional</code> apunta a ese usuario. Quedan sincronizados.</li>
+          <li><strong><code>cascade="all, delete-orphan"</code></strong>: si borrás el
+            usuario, se borran sus servicios; si sacás un servicio de la colección,
+            queda "huérfano" y se elimina.</li>
+          <li><strong><code>foreign_keys=...</code></strong>: hace falta porque
+            <code>servicios</code> referencia a <code>usuarios</code> por varias FKs
+            posibles; le aclaramos cuál usar para evitar ambigüedad.</li>
+        </ul>
+
+        <div class="box entrevista">
+          <p><span class="t">Pregunta típica:</span> «¿Diferencia entre
+          <code>ForeignKey</code> y <code>relationship</code>?»</p>
+          <p><strong>Respuesta:</strong> El <code>ForeignKey</code> es la restricción a
+          nivel de base de datos (garantiza integridad referencial). El
+          <code>relationship</code> existe sólo en el ORM: no crea ninguna columna,
+          sino que te permite navegar los objetos relacionados en Python y que
+          SQLAlchemy resuelva los JOINs / cargas por vos.</p>
+        </div>
+      </section>
+
+      <section id="config">
+        <h2>2. Configuración por entorno (12-factor)</h2>
+        <p>La regla de oro: <strong>nada de secretos en el código</strong>. La
+          configuración se lee de variables de entorno (o de un archivo
+          <code>.env</code> en local) usando <code>pydantic-settings</code>.</p>
+
+        <div class="code">
+          <div class="filename">backend/app/core/config.py (extracto)</div>
+<pre><code><span class="kw">class</span> <span class="fn">Settings</span>(BaseSettings):
+    model_config = SettingsConfigDict(env_file=<span class="st">".env"</span>, extra=<span class="st">"ignore"</span>)
+
+    DATABASE_URL: <span class="kw">str</span> = <span class="st">"postgresql+psycopg2://...localhost:5432/laburappdb"</span>
+    SECRET_KEY: <span class="kw">str</span> = <span class="st">"changeme"</span>
+    ACCESS_TOKEN_EXPIRE_MINUTES: <span class="kw">int</span> = <span class="nb">60</span> * <span class="nb">24</span>
+
+<span class="nb">@lru_cache</span>
+<span class="kw">def</span> <span class="fn">get_settings</span>() -> Settings:
+    <span class="kw">return</span> Settings()
+
+settings = get_settings()</code></pre>
+        </div>
+
+        <ul>
+          <li><strong>Cada campo</strong> se llena, en orden, desde una variable de
+            entorno con ese nombre, o del <code>.env</code>, o el default. En producción
+            inyectás <code>DATABASE_URL</code> y <code>SECRET_KEY</code> como env vars
+            (en Fase 4/5, desde Secret Manager).</li>
+          <li><strong><code>@lru_cache</code></strong> hace que <code>Settings()</code>
+            se construya una sola vez (se cachea). Leer el entorno y parsearlo es algo
+            que querés hacer al arrancar, no en cada request.</li>
+          <li>Pydantic <strong>convierte tipos</strong>: <code>ACCESS_TOKEN_EXPIRE_MINUTES</code>
+            llega como string del entorno y se valida/castea a <code>int</code>.</li>
+        </ul>
+
+        <div class="box concepto">
+          <p><span class="t">12-factor app.</span> Es una metodología para apps cloud.
+          El factor III dice: «guardá la configuración en el entorno». Beneficio: la
+          <em>misma imagen</em> Docker corre en local, staging y prod cambiando sólo
+          variables — sin recompilar ni tocar código.</p>
+        </div>
+      </section>
+
+      <section id="engine">
+        <h2>3. Engine, Session y <code>get_db</code></h2>
+        <p>Tres piezas que casi todo proyecto SQLAlchemy tiene:</p>
+
+        <div class="code">
+          <div class="filename">backend/app/core/database.py</div>
+<pre><code>engine = create_engine(
+    settings.DATABASE_URL,
+    pool_pre_ping=<span class="kw">True</span>,   <span class="cm"># revisa que la conexión siga viva antes de usarla</span>
+    echo=settings.ENVIRONMENT == <span class="st">"local"</span>,  <span class="cm"># loguea el SQL en local</span>
+)
+SessionLocal = sessionmaker(autocommit=<span class="kw">False</span>, autoflush=<span class="kw">False</span>, bind=engine)
+
+<span class="kw">class</span> <span class="fn">Base</span>(DeclarativeBase):
+    <span class="st">"""Base declarativa para todos los modelos."""</span>
+
+<span class="kw">def</span> <span class="fn">get_db</span>() -> Generator:
+    db = SessionLocal()
+    <span class="kw">try</span>:
+        <span class="kw">yield</span> db
+    <span class="kw">finally</span>:
+        db.close()</code></pre>
+        </div>
+
+        <ul>
+          <li><strong>Engine</strong>: el "motor" que administra el
+            <em>connection pool</em> (un conjunto de conexiones reutilizables a la base).
+            Crear conexiones es caro; el pool las recicla.</li>
+          <li><strong><code>pool_pre_ping=True</code></strong>: antes de entregar una
+            conexión, le hace un ping. Evita el clásico error de "conexión muerta" en
+            entornos cloud (Cloud SQL puede cerrar conexiones ociosas).</li>
+          <li><strong>Session</strong>: la "unidad de trabajo". Acumula cambios y los
+            manda con <code>commit()</code>. <code>SessionLocal()</code> crea una sesión nueva.</li>
+          <li><strong><code>get_db</code></strong>: un <em>generador</em>. Abre una
+            sesión, la <code>yield</code>-ea al endpoint, y en el <code>finally</code> la
+            cierra pase lo que pase. FastAPI lo usa como dependencia (ver sección 5).</li>
+        </ul>
+
+        <div class="box entrevista">
+          <p><span class="t">Pregunta típica:</span> «¿Por qué una sesión por request?»</p>
+          <p><strong>Respuesta:</strong> Para aislar transacciones: cada request tiene su
+          propia unidad de trabajo y su transacción. Si algo falla, se hace rollback de
+          <em>esa</em> request sin afectar a otras. Y al cerrarla, la conexión vuelve al
+          pool. Compartir una sesión global entre requests traería condiciones de carrera.</p>
+        </div>
+      </section>
+
+      <section id="security">
+        <h2>4. Seguridad: JWT + bcrypt</h2>
+
+        <h3>bcrypt — hashing de contraseñas</h3>
+        <div class="box concepto">
+          <p><span class="t">Hash ≠ cifrado.</span> Un hash es <strong>de una sola
+          vía</strong>: no se puede "desencriptar". Guardás el hash; cuando el usuario
+          ingresa la contraseña, la volvés a hashear y comparás. <strong>bcrypt</strong>
+          además es <em>lento a propósito</em> y usa <em>salt</em> (un valor aleatorio
+          por contraseña), lo que frena los ataques de fuerza bruta y las rainbow tables.</p>
+        </div>
+
+        <div class="code">
+          <div class="filename">backend/app/core/security.py (extracto)</div>
+<pre><code>pwd_context = CryptContext(schemes=[<span class="st">"bcrypt"</span>], deprecated=<span class="st">"auto"</span>)
+
+<span class="kw">def</span> <span class="fn">hash_password</span>(password: <span class="kw">str</span>) -> <span class="kw">str</span>:
+    <span class="kw">return</span> pwd_context.hash(password)
+
+<span class="kw">def</span> <span class="fn">verify_password</span>(plain: <span class="kw">str</span>, hashed: <span class="kw">str</span>) -> <span class="kw">bool</span>:
+    <span class="kw">return</span> pwd_context.verify(plain, hashed)</code></pre>
+        </div>
+
+        <h3>JWT — tokens de sesión sin estado</h3>
+        <div class="box concepto">
+          <p><span class="t">¿Qué es un JWT?</span> JSON Web Token: una cadena firmada
+          con tres partes <code>header.payload.signature</code>. El servidor lo firma con
+          <code>SECRET_KEY</code>; el cliente lo manda en cada request
+          (<code>Authorization: Bearer ...</code>). El servidor <strong>verifica la firma</strong>
+          y confía en el contenido sin guardar nada (stateless). Si la firma no valida,
+          el token es falso o fue manipulado.</p>
+        </div>
+
+        <div class="code">
+          <div class="filename">crear y decodificar el token</div>
+<pre><code><span class="kw">def</span> <span class="fn">create_access_token</span>(subject: <span class="kw">str</span>, ...) -> <span class="kw">str</span>:
+    expire = datetime.now(timezone.utc) + timedelta(minutes=...)
+    payload = {<span class="st">"sub"</span>: subject, <span class="st">"exp"</span>: expire}  <span class="cm"># sub = email; exp = expiración</span>
+    <span class="kw">return</span> jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+<span class="kw">def</span> <span class="fn">decode_access_token</span>(token: <span class="kw">str</span>) -> <span class="kw">str</span> | <span class="kw">None</span>:
+    <span class="kw">try</span>:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[...])
+        <span class="kw">return</span> payload.get(<span class="st">"sub"</span>)  <span class="cm"># devuelve el email si es válido</span>
+    <span class="kw">except</span> JWTError:
+        <span class="kw">return</span> <span class="kw">None</span></code></pre>
+        </div>
+
+        <ul>
+          <li><strong><code>sub</code></strong> (subject): a quién pertenece el token.
+            Acá usamos el email del usuario.</li>
+          <li><strong><code>exp</code></strong> (expiration): cuándo deja de valer.
+            <code>jwt.decode</code> rechaza solo los tokens vencidos.</li>
+          <li>Si alguien cambia un byte del token, la firma no coincide y
+            <code>jwt.decode</code> lanza <code>JWTError</code> ⇒ devolvemos <code>None</code>.</li>
+        </ul>
+
+        <div class="box entrevista">
+          <p><span class="t">Pregunta típica:</span> «¿Sesiones en servidor o JWT?»</p>
+          <p><strong>Respuesta:</strong> JWT es <em>stateless</em>: el servidor no guarda
+          sesiones, escala horizontal sin sticky sessions ni store compartido. La
+          contra: no se pueden "revocar" fácil antes de que expiren (por eso se usan
+          expiraciones cortas y, si hace falta, refresh tokens o una blocklist).</p>
+        </div>
+      </section>
+
+      <section id="deps">
+        <h2>5. Inyección de dependencias (DI)</h2>
+        <p>FastAPI tiene un sistema de <em>dependencias</em>: funciones que se ejecutan
+          antes del endpoint y le "inyectan" lo que necesita (la sesión de DB, el usuario
+          actual, etc.). Se declaran con <code>Depends()</code>.</p>
+
+        <div class="code">
+          <div class="filename">backend/app/core/deps.py</div>
+<pre><code>oauth2_scheme = OAuth2PasswordBearer(tokenUrl=<span class="st">"/api/v1/auth/login"</span>)
+DbSession = Annotated[Session, Depends(get_db)]
+
+<span class="kw">def</span> <span class="fn">get_current_user</span>(
+    db: DbSession,
+    token: Annotated[<span class="kw">str</span>, Depends(oauth2_scheme)],
+) -> Usuario:
+    email = decode_access_token(token)
+    <span class="kw">if</span> email <span class="kw">is</span> <span class="kw">None</span>:
+        <span class="kw">raise</span> HTTPException(<span class="nb">401</span>, <span class="st">"No se pudieron validar las credenciales"</span>)
+    user = db.query(Usuario).filter(Usuario.email == email).first()
+    <span class="kw">if</span> user <span class="kw">is</span> <span class="kw">None</span>:
+        <span class="kw">raise</span> HTTPException(<span class="nb">401</span>, ...)
+    <span class="kw">return</span> user
+
+CurrentUser = Annotated[Usuario, Depends(get_current_user)]</code></pre>
+        </div>
+
+        <ul>
+          <li><strong><code>DbSession</code> y <code>CurrentUser</code></strong> son
+            <em>alias de tipo</em>. En un endpoint, declarar
+            <code>db: DbSession</code> hace que FastAPI inyecte la sesión, y
+            <code>user: CurrentUser</code> hace que valide el token y traiga el usuario.</li>
+          <li><strong><code>OAuth2PasswordBearer</code></strong> le dice a FastAPI de
+            dónde sacar el token (header <code>Authorization: Bearer</code>) y, de paso,
+            hace que Swagger muestre el botón "Authorize".</li>
+          <li>Si no hay token válido, la dependencia corta con <strong>401</strong>
+            <em>antes</em> de entrar al endpoint. El endpoint ya recibe un usuario seguro.</li>
+        </ul>
+
+        <div class="box tip">
+          <p><span class="t">Por qué esto es elegante:</span> proteger un endpoint es tan
+          simple como agregar <code>current_user: CurrentUser</code> a su firma. La lógica
+          de auth vive en un solo lugar y se reutiliza en toda la API.</p>
+        </div>
+      </section>
+
+      <section id="factory">
+        <h2>6. App factory + <code>lifespan</code></h2>
+        <div class="code">
+          <div class="filename">backend/app/main.py (extracto)</div>
+<pre><code><span class="nb">@asynccontextmanager</span>
+<span class="kw">async def</span> <span class="fn">lifespan</span>(app: FastAPI):
+    <span class="cm"># En local creamos las tablas al vuelo; en prod lo hace Alembic.</span>
+    <span class="kw">if</span> settings.ENVIRONMENT == <span class="st">"local"</span>:
+        Base.metadata.create_all(bind=engine)
+    <span class="kw">yield</span>
+
+app = FastAPI(title=settings.PROJECT_NAME, lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=settings.BACKEND_CORS_ORIGINS, ...)
+app.include_router(api_router, prefix=settings.API_V1_PREFIX)</code></pre>
+        </div>
+        <ul>
+          <li><strong><code>lifespan</code></strong>: código que corre al
+            <em>arrancar</em> (antes del <code>yield</code>) y al <em>apagar</em> (después).
+            Acá, en local, crea las tablas con <code>create_all</code>.</li>
+          <li><strong>local vs prod</strong>: <code>create_all</code> es cómodo para
+            iterar, pero no versiona cambios. En prod el esquema lo maneja
+            <strong>Alembic</strong> (Fase 2) — más control, migraciones reversibles.</li>
+          <li><strong>CORS</strong>: middleware que autoriza al frontend
+            (<code>localhost:5173</code>) a llamar a la API desde el navegador.</li>
+          <li><strong><code>include_router(..., prefix="/api/v1")</code></strong>: todo
+            cuelga de <code>/api/v1</code>, versionando la API desde el día uno.</li>
+        </ul>
+      </section>
+
+      <section id="docker">
+        <h2>7. Docker base</h2>
+        <p>El backend se empaqueta en una imagen para correr igual en cualquier lado.</p>
+        <div class="code">
+          <div class="filename">backend/Dockerfile (idea original de Fase 1)</div>
+<pre><code><span class="kw">FROM</span> python:3.12-slim
+<span class="kw">ENV</span> PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+<span class="kw">WORKDIR</span> /app
+<span class="kw">COPY</span> requirements.txt .
+<span class="kw">RUN</span> pip install -r requirements.txt   <span class="cm"># capa cacheable: sólo cambia si cambian las deps</span>
+<span class="kw">COPY</span> . .
+<span class="kw">CMD</span> ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]</code></pre>
+        </div>
+        <ul>
+          <li><strong><code>python:3.12-slim</code></strong>: imagen base chica (menos
+            superficie de ataque, descarga más rápida).</li>
+          <li><strong>Orden de capas</strong>: copiar <code>requirements.txt</code> e
+            instalar <em>antes</em> de copiar el código aprovecha el cache de Docker: si
+            sólo cambia el código, no reinstala dependencias.</li>
+          <li><strong><code>PYTHONUNBUFFERED=1</code></strong>: que los logs salgan al
+            instante (clave para ver logs en Cloud Run / k8s).</li>
+        </ul>
+        <div class="box nota">
+          <p>En la Fase 4 este Dockerfile evoluciona: usuario no-root, y un
+          <code>entrypoint.sh</code> que corre las migraciones antes de levantar el
+          servidor. Lo vemos ahí.</p>
+        </div>
+      </section>
+
+      <section id="repaso">
+        <h2>Repaso de entrevista</h2>
+        <div class="box entrevista">
+          <p><span class="t">«¿Qué ganás usando un ORM en vez de SQL crudo?»</span><br>
+          Seguridad (parametrización ⇒ sin inyección SQL), productividad (objetos en
+          vez de tuplas), portabilidad entre motores, y migraciones versionadas.</p>
+        </div>
+        <div class="box entrevista">
+          <p><span class="t">«¿Cómo evitás filtrar secretos?»</span><br>
+          Config por entorno con pydantic-settings; en prod los valores vienen de
+          Secret Manager. El repo sólo tiene <code>.env.example</code> con placeholders.</p>
+        </div>
+        <div class="box entrevista">
+          <p><span class="t">«¿Qué pasa en cada request, de punta a punta?»</span><br>
+          FastAPI resuelve dependencias (<code>get_db</code> abre sesión, opcionalmente
+          <code>get_current_user</code> valida el JWT) → corre el endpoint → la sesión
+          hace commit/rollback → <code>get_db</code> la cierra y vuelve al pool.</p>
+        </div>
+        <p style="margin-top:24px">
+          <a href="index.html">← Volver al índice</a> &nbsp;·&nbsp;
+          <a href="fase-2.html">Siguiente: Fase 2 — Backend de dominio →</a>
+        </p>
+      </section>
+    </main>
+  </div>
+
+  <footer>chambapp · Fase 1 · material de estudio</footer>
+</body>
+</html>
