@@ -104,6 +104,40 @@ docker-compose.yml   local: postgres + api
 **Proyecto completo.** Las 5 fases están hechas. Material de estudio en
 `docs/estudio/` (un HTML por fase, autocontenido, foco en backend + front + infra).
 
+### 🚀 EN PRODUCCIÓN (desplegado y funcionando)
+
+- **App (frontend)**: https://chambapp-a0472.web.app  (Firebase Hosting)
+- **API**: https://chambapp-api-314471615570.us-central1.run.app  (Cloud Run, `/docs`)
+- **DB**: Supabase Postgres (proyecto ref `crtynrxjrssaqmudgnjx`, region us-east-1),
+  conectada por el **Session pooler** (IPv4): host `aws-1-us-east-1.pooler.supabase.com:5432`.
+- **Proyecto GCP/Firebase**: `chambapp-a0472` (NO `juanhub-d6013`). Región Cloud Run: `us-central1`.
+- **Arquitectura**: Firebase Hosting sirve la SPA y reescribe `/api/**` → Cloud Run
+  (mismo origen, sin CORS). El front se buildea con `VITE_API_URL=/api/v1`. Ver `firebase.json`.
+- **Secrets** en Secret Manager: `DATABASE_URL` (incluye la pass del pooler, `sslmode=require`)
+  y `SECRET_KEY`. Inyectados con `--set-secrets`. La SA de runtime tiene `secretAccessor`.
+- **Migraciones/seed**: el entrypoint corre `alembic upgrade head` al arrancar. El seed se
+  cargó una vez a mano contra Supabase (`SEED_ON_START` quedó en `false`).
+- **Costo**: $0 — Firebase Hosting free + Cloud Run escala a cero + Supabase free.
+
+#### Redeploy
+
+```bash
+# Backend (build + deploy):
+gcloud builds submit backend --tag us-central1-docker.pkg.dev/chambapp-a0472/chambapp/chambapp-api:TAG
+gcloud run deploy chambapp-api --image .../chambapp-api:TAG --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars="^##^ENVIRONMENT=production##SEED_ON_START=false##BACKEND_CORS_ORIGINS=https://chambapp-a0472.web.app,https://chambapp-a0472.firebaseapp.com" \
+  --set-secrets=DATABASE_URL=DATABASE_URL:latest,SECRET_KEY=SECRET_KEY:latest
+# Nota: BACKEND_CORS_ORIGINS lleva coma -> usar el delimitador ^##^ de gcloud.
+
+# Frontend:
+cd frontend && npm run build && cd .. && firebase deploy --only hosting --project chambapp-a0472
+```
+
+> Bug arreglado en el deploy: `BACKEND_CORS_ORIGINS` (tipo `list`) hacía que
+> pydantic-settings intentara parsear el env var como JSON y crasheaba el contenedor.
+> Fix en `app/core/config.py`: `Annotated[list[str], NoDecode]` + el validator que separa por comas.
+
 ### Infra Fase 5 (`infra/k8s/`)
 
 - **No se desplegó** a propósito: GKE no tiene free tier (cluster + Cloud SQL +

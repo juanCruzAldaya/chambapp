@@ -1,7 +1,8 @@
 from functools import lru_cache
+from typing import Annotated
 
 from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -23,8 +24,9 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 1 día
 
-    # CORS
-    BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:5173"]
+    # CORS. NoDecode evita que pydantic-settings intente parsear el valor del
+    # env var como JSON (vendría como CSV); lo separa nuestro validador de abajo.
+    BACKEND_CORS_ORIGINS: Annotated[list[str], NoDecode] = ["http://localhost:5173"]
 
     @field_validator("BACKEND_CORS_ORIGINS", mode="before")
     @classmethod
