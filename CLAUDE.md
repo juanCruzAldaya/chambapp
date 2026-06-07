@@ -92,14 +92,20 @@ docker-compose.yml   local: postgres + api
 
 - [x] **Fase 1 — Fundación**: estructura, core, modelos ORM, Docker local
 - [x] **Fase 2 — Backend dominio**: schemas Pydantic + routers + Alembic +
-      seed de categorías + tests pytest
-- [ ] **Fase 3 — Frontend**: React+Vite+Tailwind, auth, búsqueda de servicios,
-      agenda, contrataciones
+      seed de categorías + tests pytest (30 tests)
+- [x] **Fase 3 — Frontend**: React 19 + Vite + Tailwind v4, auth, búsqueda de
+      servicios, detalle + contratar, publicar, agenda, contrataciones, perfil
 - [ ] **Fase 4 — Cloud Run**: build → Artifact Registry → Cloud Run + Cloud SQL + CI/CD
 - [ ] **Fase 5 — GKE (estudio)**: manifests Deployment/Service/Ingress, HPA
 
-**Próximo paso sugerido:** Fase 3, el **frontend** React+Vite+Tailwind, consumiendo
-los endpoints de `/api/v1` (empezando por auth + búsqueda de servicios).
+**Próximo paso sugerido:** Fase 4 — **Cloud Run**: dockerizar el frontend (build
+estático servido por nginx o Vite preview), publicar imágenes en Artifact Registry,
+desplegar backend + frontend en Cloud Run con Cloud SQL (Postgres) y CI/CD.
+
+> Nota Fase 3→backend: se agregó un endpoint público `GET /usuarios/{id}/calendarios`
+> (disponibilidad del profesional) para habilitar el flujo de contratación por turnos.
+> El frontend vive en `frontend/` (ver su README). Stack: cliente `fetch` tipado +
+> AuthContext (JWT en localStorage), proxy de Vite `/api → :8000` en dev.
 
 ## Cómo correr
 
@@ -125,6 +131,12 @@ python -m app.db.seed
 # Tests (usan SQLite in-memory, no requieren Postgres):
 pytest
 ruff check app tests alembic
+
+# Frontend (en otra terminal, con el backend corriendo en :8000):
+cd frontend
+npm install
+npm run dev        # http://localhost:5173 (proxea /api -> :8000)
+npm run build      # tsc -b && vite build
 ```
 
 ## Convenciones y aprendizajes (importante)

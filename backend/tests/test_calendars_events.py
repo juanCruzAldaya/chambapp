@@ -55,6 +55,31 @@ def test_evento_rango_horario_invalido(client: TestClient):
     assert resp.status_code == 422
 
 
+def test_disponibilidad_publica_de_usuario(client: TestClient):
+    user = registrar(client, "dispo@example.com")
+    headers = login_headers(client, "dispo@example.com")
+    cal_id = client.post(
+        "/api/v1/calendarios", headers=headers, json={"anio": 2026, "mes": 6}
+    ).json()["id"]
+    client.post(
+        "/api/v1/eventos",
+        headers=headers,
+        json={
+            "calendario_id": cal_id,
+            "fecha": "2026-06-15",
+            "hora_inicio": "09:00:00",
+            "hora_fin": "10:00:00",
+        },
+    )
+
+    # Endpoint público: no requiere auth
+    resp = client.get(f"/api/v1/usuarios/{user['id']}/calendarios")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert len(data[0]["eventos"]) == 1
+
+
 def test_evento_en_calendario_ajeno_prohibido(client: TestClient):
     headers_a = _auth(client, "duenoa@example.com")
     cal_id = client.post(
